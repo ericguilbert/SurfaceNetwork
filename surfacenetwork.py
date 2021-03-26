@@ -269,6 +269,8 @@ class SurfaceNetwork(ThalwegNetwork):
                             ij = (i+ldr[kk][0], j+ldr[kk][1])
                             #point = shapely.geometry.Point(ij)
                             #We only take the points that are in the polygon defined by the thalwegs
+                            if not self.terrain.isInside(ij[0], ij[1]):
+                                continue
                             try:
                                 tside = 0
                                 # if we leave a dangling thalweg
