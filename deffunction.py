@@ -429,6 +429,8 @@ def sideOfLine(line, i, pt):
     u = (pt[0] - p[0], pt[1] - p[1])
     v1 = (q[0] - p[0], q[1] - p[1])
     v2 = (r[0] - p[0], r[1] - p[1])
+    if q==r:
+        v1=(-v2[0], -v2[1])
     
     sign1 = v1[0]*u[1] - v1[1]*u[0]
     sign2 = v2[0]*u[1] - v2[1]*u[0]
