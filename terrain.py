@@ -389,13 +389,13 @@ class Terrain:
         i = istart
         j = jstart
         b = False
-        # istart, jstart is now outside the terrain
+        # istart, jstart is inside the terrain
         while not b:
             inbound.append((i, j))
             pxlaround = [(i + di, j + dj) for (di, dj) in g]
             #        print('pxl', i, j, self.pixelclass[i,j], 'neighb', pxlaround)
             nexti = 4
-            for ipxl, pxl in enumerate(pxlaround[:-1]):
+            for ipxl, pxl in enumerate(pxlaround):
                 if self.isInside(pxl[0], pxl[1]):
                     nexti = ipxl
                     break
