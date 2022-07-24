@@ -6,11 +6,22 @@ terrain.py:
 	
 	author: Eric Guilbert
 """
-from iomodule import readRasterDTM
-from collections import deque
+#from math import *
+#from pylab import *
 
+#from qgis.core import *
+#from PyQt5.QtCore import *
+
+from time import perf_counter_ns
+from multiprocessing import Pool, RawArray, Array
+from collections import deque
 import numpy as np
+
+from iomodule import readRasterDTM
 import deffunction as df
+
+
+var_dict = {}
 
 class Terrain:
     # class describing a terrain defined by:
@@ -52,7 +63,7 @@ class Terrain:
         outside = False
         # fill the pixelclass array
         # at the beginning all points are either slope or notin class
-        self.pixelclass = np.ones((self.m, self.n))
+        self.pixelclass = np.ones((self.m, self.n), dtype=int)
         for i in range(self.m):
             for j in range(self.n):
                 if self.dtm[i, j] > self.nodata:
@@ -61,7 +72,9 @@ class Terrain:
                     self.pixelclass[i, j] = df.NOTIN # outside the terrain
                     outside = True
 
-
+        global nodata 
+        nodata = self.nodata
+                
         # if there are no pixel outside, the boundary is the border of the raster
         if not outside:
             self.boundary = [(i, -1) for i in range(-1, self.m)] + [(self.m, j) for j in range(-1, self.n)] \
@@ -70,9 +83,20 @@ class Terrain:
                          + [(i, self.n - 1) for i in range(self.m - 1, 0, -1)] + [(0, j) for j in range(self.n - 1, 0, -1)]
         else:
             self.boundary, self.inbound = self.detectBoundary()
-
+        # get the pixels that appear twice on the boundary
+        seen = set()
+        double = set()
+        seen_add = seen.add
+        double_add = double.add
+        for i in self.boundary:
+            if i in seen:
+                double_add(i)
+            else:
+                seen_add(i)
+        self.duplicate = double
+            
         # initialises other attributes
-        self.diag = np.zeros((self.m - 1, self.n - 1))
+        self.diag = np.zeros((self.m - 1, self.n - 1), dtype=np.ndarray)
         self.neighbour = np.zeros((self.m, self.n), dtype=np.ndarray)
         self.maxz = np.max(self.dtm)
 
@@ -264,6 +288,30 @@ class Terrain:
                         neigh.append(dr[ie])
                 self.neighbour[i, j] = neigh
 
+    def getBoundaryIndex(self, pointpair):
+        first = pointpair[0]
+        second = pointpair[1]
+        boundary = self.boundary
+        inbound = self.inbound
+        i1 = boundary.index(first)
+        i2 = inbound.index(second)
+        if first not in self.duplicate:
+            return(i1, i2)
+        neighbours = [(first[0]+i, first[1]+j) for (i,j) in df.ldr8]
+        indexlist = [inbound.index(n) for n in neighbours if n in inbound]
+        indexlist.sort()
+        start = indexlist[0]
+        end = indexlist[-1]+1
+        part = 0
+        for index in range(start,end):
+            if index == i2:
+                if part == 1:
+                    i1 = len(boundary) - 1 - boundary[::-1].index(first)
+                return (i1, i2)
+            if part == 0 and inbound[index] not in indexlist:
+                part = 1
+            
+    
     # define the boundary line surrounding the terrain
     # we need both an outer boundary and an inner boundary for sorting thalwegs
     def detectBoundary(self):
@@ -395,21 +443,23 @@ class Terrain:
             pxlaround = [(i + di, j + dj) for (di, dj) in g]
             #        print('pxl', i, j, self.pixelclass[i,j], 'neighb', pxlaround)
             nexti = 4
+#            for ipxl, pxl in enumerate(pxlaround[:-1]):
             for ipxl, pxl in enumerate(pxlaround):
                 if self.isInside(pxl[0], pxl[1]):
                     nexti = ipxl
                     break
             if nexti == 4:
+                print('turn around', (i,j), pxlaround, inbound[-2])
                 break
             (i, j) = pxlaround[nexti]
             g.rotate(-nexti + 1)
             b = ((i, j) == (istart, jstart))
         return inbound
 
-    def diagonalisation(self):
+    def flowDiagonalisation(self):
         """
         Define a diagonal in each cell that connects to the lowest point of the cell.
-        This was used before we maximise the number of saddles.
+        This favours the computation of streams.
 
         Returns
         -------
@@ -624,7 +674,7 @@ class Terrain:
     def checkSaddle(self, i, j, ldr):
         """
         Checks if a pixel is a saddle by comparing it with its neighbours given in ldr.
-        The method can be sped up. The method return an object containing the list of
+        The method can be sped up. The method returns an object containing the list of
         critical lines (their first segment only)
 
         Parameters
@@ -845,4 +895,204 @@ class Terrain:
                         saddleidx[i, j] = count_n
                         count_n += 1
                         count_p += (Nc / 2 - 1)
+        return saddledict, saddleidx    # computation of saddles directly from the raster
+    
+    def computeSaddlesMP(self):
+        """
+        Detection of all saddles on the raster. Comparison is done on all eight neighbours.
+        The objective is to detect as many saddles as possible, they will be sorted after.
+        In the pixelclass, all saddles are marked TOBEPROCESSED for that.
+
+        Returns
+        -------
+        saddledict : dictionary
+            Contains all the saddles with their critical lines.
+        saddleidx : dictionary
+            Hash table storing saddle coordinates for indexing.
+
+        """
+        # matrix dimensions
+        m = self.m
+        n = self.n
+        # create a raw array X for the dtm
+        start = perf_counter_ns()
+        A = RawArray('f', m * n)
+        # and wrap it in a m*n array
+        Amn = np.frombuffer(A, 'f').reshape((m, n))
+        np.copyto(Amn, self.dtm)
+        
+        P = RawArray('i', m * n)
+        Pmn = np.frombuffer(P, dtype = np.int).reshape((m,n))
+        np.copyto(Pmn, self.pixelclass)
+        end = perf_counter_ns()
+        print("Array time:", end - start)
+        
+#        saddledict, saddleidx = computeBlockSaddles(A, P, m, n)
+        with Pool(initializer = init_worker, initargs=(A, P, (m,n))) as pool:
+            result = pool.map(computeBlockSaddles, range(1))
+        # result est une liste de saddledict qu’il faut concaténer
+        saddledict = result[0]
+        # we now build saddleidx and update pixelclass
+        saddleidx = {}
+        for skey in saddledict:
+            s = saddledict[skey]
+            saddleidx[s['ij']] = skey
+            self.pixelclass[s['ij']] = df.TOBEPROCESSED
         return saddledict, saddleidx
+    
+#        return computeBlockSaddles(self.dtm, self.pixelclass, m, n, self)
+
+def init_worker(A, P, shape):
+    # A, P and shape are stored as elements of var_dict
+    # A and P are two arrays, shape is a pair with their dimension
+    var_dict['A'] = A
+    var_dict['P'] = P
+    var_dict['shape'] = shape
+      
+def getAllNeighbourHeights(i, j, Amn, m, n, ldr):
+    """
+    Returns the height of all the neighbours of a pixel. Neighbouring pixels
+    are indicated by ldr. By default all eight neighbours are returned.
+
+    Parameters
+    ----------
+    i : integer
+        DESCRIPTION.
+    j : integer
+        DESCRIPTION.
+    ldr : list of pairs of integer, optional
+        Contains the vectors to each neighbour. The default is df.ldr8.
+
+    Returns
+    -------
+    v : list of floats
+        Heights of neighbouring points.
+
+    """
+    # ldr = ((-1,-1), (-1,0), (-1,1), (0,1), (1,1), (1,0), (1,-1), (0,-1))
+    l = len(ldr)
+    v = [0] * l
+    for k in range(l):
+        dr = ldr[k]
+        ik = i + dr[0]
+        jk = j + dr[1]
+        if (ik >= 0) and (ik < m) and (jk >= 0) and (jk < n):
+            #            if ((ik>=0) and (ik<self.m) and (jk>=0) and (jk<self.n)):
+            v[k] = Amn[ik, jk]
+        else:
+            v[k] = nodata
+    return v
+
+#def computeBlockSaddles(A, P, m, n):
+def computeBlockSaddles(i):
+    
+    print('in computeBlockSaddles', i)
+    A = var_dict['A']
+    P = var_dict['P']
+    (m,n) = var_dict['shape']
+    # these are counters for counting saddle points
+    count_n = 0  # number of saddles (without multiplicity)
+
+    Amn = np.frombuffer(A, 'f').reshape((m, n))
+    Pmn = np.frombuffer(P, dtype = np.int).reshape((m,n))
+
+    saddledict = {}  # dictionary of saddles
+
+    # 8 directions around a pixel, goes clockwise
+    ldr = ((-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1))
+    nv = len(ldr)
+
+    start = perf_counter_ns()
+    # here starts the computation of saddle points
+    # we go through each point and check its elevation against its neighbours
+    for i in range(m):
+        for j in range(n):
+            if Pmn[i, j] > df.OUT:
+                z = Amn[i, j]
+                v = getAllNeighbourHeights(i, j, Amn, m, n, ldr)
+                signe = [0] * nv  # sign of elevation difference with centre
+                Nc = 0
+
+                # compute the points above and below
+                for k in range(nv):
+                    dr = ldr[k]
+                    if (v[k] - z > 0):
+                        signe[k] = 1
+
+                    elif (v[k] - z < 0):
+                        signe[k] = -1
+
+                    else:
+                        # to be processed separately: flat areas?
+                        if (dr[0] > 0):  # di > 0
+                            signe[k] = 1
+                        elif (dr[0] < 0):
+                            signe[k] = -1
+                        elif (dr[1] > 0):
+                            signe[k] = 1
+                        else:
+                            signe[k] = -1
+                # compute how many times we go above and below
+                for k in range(nv):
+                    if (signe[k] != signe[k - 1]):
+                        Nc += 1
+
+                if Nc >= 4:  # classified as a saddle
+                    dz = df.gradLength(z, v, ldr)
+                    # compute the points above and below
+                    indx = list(range(nv))
+                    # if two consecutive neighbours have the same sign, we keep the one with the steepest slope
+                    k = nv - 1
+                    while k >= 0:
+                        if (signe[k] == signe[k - 1]):
+                            tmp = signe[k] * (dz[k] - dz[k - 1])
+                            if tmp == 0:
+                                # we fix the sign according to the lexicographical order
+                                ik = indx[k]
+                                ik1 = indx[k - 1]
+                                drk = ldr[ik]
+                                drk1 = ldr[ik1]
+                                tmp = -signe[k] * df.lexicoSign(drk1[0] - drk[0], drk1[1] - drk[1])
+                            if (tmp > 0):
+                                del signe[k - 1]
+                                del dz[k - 1]
+                                del indx[k - 1]
+                            elif (tmp < 0):
+                                del signe[k]
+                                del dz[k]
+                                del indx[k]
+                            if k == len(signe):
+                                k -= 1
+                        else:
+                            k -= 1
+                    criticalline = [[(i, j), (i + di, j + dj), 0, 0] for (di, dj) in [ldr[k] for k in indx]]
+                    k = 0
+                    for l in criticalline:
+                        l[3] = v[indx[k]]
+                        k += 1
+                    firstline = criticalline[0]
+                    if firstline[3] > z:  # first line is a ridge
+                        s = 1
+                    elif firstline[3] < z:
+                        s = -1
+                    else:
+                        s = df.lexicoSign(firstline[1][0] - firstline[0][0], firstline[1][1] - firstline[0][1])
+                    for l in criticalline:
+                        l[2] = s
+                        s = -1 * s
+                    saddledict[count_n] = {
+                        'ij': (i, j),
+                        'z': Amn[i, j],
+                        'line': criticalline,
+                        'thalweg': [],
+                        'ridge': [],
+                        'type': df.SADDLE
+                    }
+                    count_n += 1
+    end = perf_counter_ns()
+    print("Block time:", end - start)
+
+    return saddledict
+
+def testing(q, i):
+    q.put(i)

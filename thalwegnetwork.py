@@ -8,8 +8,10 @@ surfacenetwork.py:
 """
 
 from time import perf_counter_ns
+from math import sqrt
 from functools import reduce
 
+import pickle
 import numpy as np
 import shapely.geometry
 
@@ -45,7 +47,7 @@ class ThalwegNetwork:
         self.nodekey = 0
     
     # constructor building the network from a terrain
-    def buildThalwegsFromTerrain(self, terrain):
+    def buildThalwegsFromTerrain(self, terrain, correction = True):
         """
         Builds a surface network on a given terrain. Start by detecting saddles.
         Follows with thalwegs and ridges. Ridges are constrained to avoid 
@@ -55,6 +57,9 @@ class ThalwegNetwork:
         ----------
         terrain : Terrain
             Instance of the class Terrain on which the network is built.
+        correction : boolean
+            True if a correction is done to stay closer to the gradient
+            False if the descent direction is not corrected as in D8
 
         Returns
         -------
@@ -67,6 +72,10 @@ class ThalwegNetwork:
         self.ridgedict = {}
         self.terrain = terrain
         
+        if correction:
+            df.distancefactor = 2/3
+        else:
+            df.distancefactor = sqrt(2)/2
         #print('Computing all potential saddles')
         start = perf_counter_ns()
         saddledict, saddleidx = self.terrain.computeSaddles()
@@ -83,7 +92,7 @@ class ThalwegNetwork:
         end = perf_counter_ns()
         print("Pit computation time:", end - start)
         start = perf_counter_ns()
-        self.createThalwegs()
+        self.createThalwegs(correction)
         self.orderThalwegsAroundNodes()
         end = perf_counter_ns()
         print("Thalweg computation time (including ordering):", end - start)
@@ -100,6 +109,64 @@ class ThalwegNetwork:
         end = perf_counter_ns()
         print("Peak computation time:", end - start)
         
+    def buildFlowThalwegsFromTerrain(self, terrain, correction = False):
+        """
+        Builds a surface network on a given terrain. Start by detecting saddles.
+        Follows with thalwegs and ridges. Ridges are constrained to avoid 
+        conflicts with thalwegs.
+
+        Parameters
+        ----------
+        terrain : Terrain
+            Instance of the class Terrain on which the network is built.
+        correction : boolean
+            True if a correction is done to stay closer to the gradient
+            False if the descent direction is not corrected as in D8
+
+        Returns
+        -------
+        None.
+
+        """
+        self.nodedict = {}
+        self.nodeidx = {}
+        self.thalwegdict = {}
+        self.ridgedict = {}
+        self.terrain = terrain
+        
+        print("Diagonalising the raster")
+        terrain.flowDiagonalisation()
+        print('Computing saddles and pits')
+        start = perf_counter_ns()
+        self.computeSaddles()
+        self.computePits()
+        end = perf_counter_ns()
+        print("Saddle and pit computation time:", end - start)
+        start = perf_counter_ns()
+        self.createThalwegs(correction)
+        self.orderThalwegsAroundNodes()
+        end = perf_counter_ns()
+        print("Thalweg computation time (including ordering):", end - start)
+        start = perf_counter_ns()
+        self.computeHills()
+        end = perf_counter_ns()
+        print("Hill computation time:", end - start)
+        start = perf_counter_ns()
+        terrain.saddleAndThalwegAwareDiagonalisation()
+        end = perf_counter_ns()
+        print("Diagonalisation time:", end - start)
+        start = perf_counter_ns()
+        self.computePeaks()
+        end = perf_counter_ns()
+        print("Peak computation time:", end - start)
+        
+    def saveNetwork(self, directory, name):
+        tmp = self.terrain
+        self.terrain = None # we don't save the terrain, that's too big
+        with open( directory + name + '.snw', 'wb') as f:
+            pickle.dump(self, f, pickle.HIGHEST_PROTOCOL)
+        self.terrain = tmp
+    
     def getThalwegNeighbourNodes(self, ipt):
         """
         Returns nodes connected to this node through the thalwegs. Two sets are
@@ -122,6 +189,63 @@ class ThalwegNetwork:
                 higherneighbour.add(self.thalwegdict[-it]['start'])
         return lowerneighbour, higherneighbour
     
+    def computeThalwegLength(self, it):
+        """
+        Compute the length of a thalweg
+
+        Parameters
+        ----------
+        it : integer, thalweg index
+
+        Returns
+        -------
+        length: length of the thalweg.
+
+        """
+        t = self.thalwegdict[it]
+        return df.length(t['polyline'])
+    
+    def computeThalwegSlope(self, it):
+        t = self.thalwegdict[it]
+        if t['end'] == -1:
+            return df.NOTIN
+        length = df.length(t['polyline'])
+        ptend = self.nodedict[t['end']]
+        ptstart = self.nodedict[t['start']]
+        dz = ptstart['z'] - ptend['z']
+        return dz / length
+        
+    def computeSlope(self, ipt1, ipt2):
+        """
+        Computes the slope in a straight line between two nodes.
+        It is done by dividing the difference of elevation by the distance
+
+        Parameters
+        ----------
+        ipt1 : integer
+            index of the first node.
+        ipt2 : integer
+            index of the second node.
+
+        Returns
+        -------
+        The signed slope. The value is negative if the second point is lower 
+        than the first point.
+
+        """
+        pt1 = self.nodedict[ipt1]
+        pt2 = self.nodedict[ipt2]
+        
+        if ipt1 < 0:
+            return -pt1['z']
+        dz = pt2['z'] - pt1['z']
+        if dz == 0:
+            return 0
+        delta = (pt2['ij'][0] - pt1['ij'][0], pt2['ij'][1] - pt1['ij'][1])
+        distance = np.sqrt(delta[0]*delta[0] + delta[1]*delta[1])
+        
+        return dz / distance
+        
     def mergeSaddles(self, saddledict, saddleidx):
         """
         Eliminates saddles in conflict with other saddles. The method proceeds
@@ -236,6 +360,131 @@ class ThalwegNetwork:
             self.nodekey += 1
         del saddledict
 #        self.saddlelist = [*passdict] # define list of saddle keys
+
+    def computeSaddles(self):
+        """
+        Detection of saddles from the terrain. The terrain has already been diagonalised
+        Pits are detected at the same time. Peaks are not because the terrain may be
+        rediagonalised to optimise peak and ridge computation
+
+        Returns
+        -------
+        saddledict : dictionary
+            Contains all the saddles with their critical lines.
+        saddleidx : dictionary
+            Hash table storing saddle coordinates for indexing.
+
+        """
+        # matrix dimensions
+        A = self.terrain.dtm
+        pixelclass = self.terrain.pixelclass
+        m = self.terrain.m
+        n = self.terrain.n
+
+        # these are counters for counting saddle points
+        count_p = 0  # number of saddles (counting multiplicity)
+        count_n = 0  # number of saddles (without multiplicity)
+
+        saddledict = {}  # dictionary of saddles
+        saddleidx = {}  # dictionary indexing saddle coordinates
+
+
+        # here starts the computation of saddle points
+        # we go through each point and check its elevation against its neighbours
+        for i in range(m):
+            for j in range(n):
+                if pixelclass[i, j] > df.OUT:
+                    z = A[i, j]
+                    ldr = self.terrain.neighbour[i, j]
+                    nv = len(ldr)
+                    v = self.terrain.getNeighbourHeights(i, j)  # neighbour elevations
+                    signe = [0] * nv  # sign of elevation difference with centre
+                    Nc = 0
+
+                    # compute the points above and below
+                    for k in range(nv):
+                        dr = ldr[k]
+                        if (v[k] - z > 0):
+                            signe[k] = 1
+
+                        elif (v[k] - z < 0):
+                            signe[k] = -1
+
+                        else:
+                            # to be processed separately: flat areas?
+                            if (dr[0] > 0):  # di > 0
+                                signe[k] = 1
+                            elif (dr[0] < 0):
+                                signe[k] = -1
+                            elif (dr[1] > 0):
+                                signe[k] = 1
+                            else:
+                                signe[k] = -1
+                    # compute how many times we go above and below
+                    for k in range(nv):
+                        if (signe[k] != signe[k - 1]):
+                            Nc += 1
+
+                    if Nc >= 4:  # classified as a saddle
+                        dz = df.gradLength(z, v, ldr)
+                        # compute the points above and below
+                        indx = list(range(nv))
+                        # if two consecutive neighbours have the same sign, we keep the one with the steepest slope
+                        k = nv - 1
+                        while k >= 0:
+                            if (signe[k] == signe[k - 1]):
+                                tmp = signe[k] * (dz[k] - dz[k - 1])
+                                if tmp == 0:
+                                    # we fix the sign according to the lexicographical order
+                                    ik = indx[k]
+                                    ik1 = indx[k - 1]
+                                    drk = ldr[ik]
+                                    drk1 = ldr[ik1]
+                                    tmp = -signe[k] * df.lexicoSign(drk1[0] - drk[0], drk1[1] - drk[1])
+                                if (tmp > 0):
+                                    del signe[k - 1]
+                                    del dz[k - 1]
+                                    del indx[k - 1]
+                                elif (tmp < 0):
+                                    del signe[k]
+                                    del dz[k]
+                                    del indx[k]
+                                if k == len(signe):
+                                    k -= 1
+                            else:
+                                k -= 1
+                        criticalline = [[(i, j), (i + di, j + dj), 0, 0] for (di, dj) in [ldr[k] for k in indx]]
+                        k = 0
+                        for l in criticalline:
+                            l[3] = v[indx[k]]
+                            k += 1
+                        firstline = criticalline[0]
+                        if firstline[3] > z:  # first line is a ridge
+                            s = 1
+                        elif firstline[3] < z:
+                            s = -1
+                        else:
+                            s = df.lexicoSign(firstline[1][0] - firstline[0][0], firstline[1][1] - firstline[0][1])
+                        for l in criticalline:
+                            l[2] = s
+                            s = -1 * s
+                        saddledict[count_n] = {
+                            'ij': (i, j),
+                            'z': A[i, j],
+                            'line': criticalline,
+                            'thalweg': [],
+                            'ridge': [],
+                            'type': df.SADDLE
+                        }
+                        pixelclass[i, j] = df.SADDLE
+                        saddleidx[i, j] = count_n
+                        count_n += 1
+                        count_p += (Nc / 2 - 1)
+        self.nodekey = 0
+        for i in saddledict:
+            self.nodedict[self.nodekey] = saddledict[i]
+            self.nodekey += 1
+        del saddledict
 
     # computation of pits considering saddles
     def computePits(self):
@@ -365,7 +614,7 @@ class ThalwegNetwork:
                         self.nodekey += 1
 
     #creation of the thalweg dictionary
-    def createThalwegs(self):
+    def createThalwegs(self, correction = True):
         """
         Computation of thalwegs starting from saddles. Thalwegs do not overlap or
         go through saddles. If two thalwegs join, a confluence is inserted and a
@@ -373,6 +622,12 @@ class ThalwegNetwork:
         normally along the line of steepest descent. Since we stick to the vertices,
         we go to the closest vertice but record the offset and adjust it when
         too big by shifting the thalweg.
+
+        Parameters
+        ----------
+        correction : boolean
+            True if a correction is done to stay closer to the gradient
+            False if the descent direction is not corrected as in D8
 
         Returns
         -------
@@ -441,77 +696,71 @@ class ThalwegNetwork:
                     # we check if we need to modify it according to the lag
                     
                     ########### beginning of the correction block #############
-                                
-                    # there are two possible triangles, one on each side of the edge
-                    # we first check in which triangle the gradient is
-                    lag = 0
-                    vleft = 0
-                    vright = 0
-                    kleft = kmin - 1
-                    kright = kmin + 1
-                    if kright == len(ldr):
-                        kright = 0
-                    # cases where the diagonal does not connect to the node z
-                    if abs(ldr[kmin][0]-ldr[kleft][0])+abs(ldr[kmin][1]-ldr[kleft][1]) == 1:
-                        vleft = v[kleft] - z
-                    if abs(ldr[kmin][0]-ldr[kright][0])+abs(ldr[kmin][1]-ldr[kright][1]) == 1:
-                        vright = v[kright] - z
-
-#                    print(ldr)
-#                    print('vleft, vright', vleft, vright)
-                    if vleft == vright or min(vleft, vright) >= 0: # no lag, it goes along ldr[kmin]
+                    if correction:            
+                        # there are two possible triangles, one on each side of the edge
+                        # we first check in which triangle the gradient is
                         lag = 0
-                    else: # either to the left or the right triangle
-                        k1 = kmin
-                        if vleft < vright: # if the left point is lower, gradient is on the left
-                            k1 = kleft
-                            v1 = vleft
-                        if vright < vleft:
-                            k1 = kright
-                            v1 = vright
-                        # here we compute the gradient direction by solving a 2x2 system
-                        # may be simplified noting that one coefficient is zero, others are ones
-                        # but would need to separate all cases
-                        x1 = ldr[kmin][0]
-                        y1 = ldr[kmin][1]
-                        x2 = ldr[k1][0]
-                        y2 = ldr[k1][1]
-                        z1 = v[kmin] - z
-                        z2 = v1
-                        det = 1/(x1*y2 - x2*y1)
-                        a = det*(y2*z1 - y1*z2)
-                        b = det*(x1*z2 - x2*z1)
-                        # the gradient direction is given by (a,b)
-                        # now we compute the lag
-                        # the lag is the difference between ldr[kmin] and (a,b)
-#                        print('kmin', kmin, 'k1', k1)
-#                        print('ldr[kmin]', ldr[kmin], 'ldr[k1]', ldr[k1], 'oldldr', oldldr)
-                        if (ldr[kmin][0] == ldr[k1][0]): # compute b for a = 1
-                            b = -b/a
-                            a = ldr[kmin][0]
-                            if abs(b) < abs(a):
-                                lag = b - ldr[kmin][1]
+                        vleft = 0
+                        vright = 0
+                        kleft = kmin - 1
+                        kright = kmin + 1
+                        if kright == len(ldr):
+                            kright = 0
+                        # cases where the diagonal does not connect to the node z
+                        if abs(ldr[kmin][0]-ldr[kleft][0])+abs(ldr[kmin][1]-ldr[kleft][1]) == 1:
+                            vleft = v[kleft] - z
+                        if abs(ldr[kmin][0]-ldr[kright][0])+abs(ldr[kmin][1]-ldr[kright][1]) == 1:
+                            vright = v[kright] - z
+    
+                        if vleft == vright or min(vleft, vright) >= 0: # no lag, it goes along ldr[kmin]
+                            lag = 0
+                        else: # either to the left or the right triangle
+                            k1 = kmin
+                            if vleft < vright: # if the left point is lower, gradient is on the left
+                                k1 = kleft
+                                v1 = vleft
+                            if vright < vleft:
+                                k1 = kright
+                                v1 = vright
+                            # here we compute the gradient direction by solving a 2x2 system
+                            # may be simplified noting that one coefficient is zero, others are ones
+                            # but would need to separate all cases
+                            x1 = ldr[kmin][0]
+                            y1 = ldr[kmin][1]
+                            x2 = ldr[k1][0]
+                            y2 = ldr[k1][1]
+                            z1 = v[kmin] - z
+                            z2 = v1
+                            det = 1/(x1*y2 - x2*y1)
+                            a = det*(y2*z1 - y1*z2)
+                            b = det*(x1*z2 - x2*z1)
+                            # the gradient direction is given by (a,b)
+                            # now we compute the lag
+                            # the lag is the difference between ldr[kmin] and (a,b)
+                            if (ldr[kmin][0] == ldr[k1][0]): # compute b for a = 1
+                                b = -b/a
+                                a = ldr[kmin][0]
+                                if abs(b) < abs(a):
+                                    lag = b - ldr[kmin][1]
+                                else:
+                                    lag = 0
                             else:
-                                lag = 0
-                        else:
-                            a = -a/b
-                            b = ldr[kmin][1]
-                            if abs(a) < abs(b):
-                                lag = a - ldr[kmin][0]
-                            else: lag = 0
-                        # if we keep going the same way, correct with the lag
-#                        print('gradient', a, b)
-#                        print('oldlag', oldlag, 'lag', lag)
-                        if (ldr[kmin] == oldldr):
-                            lag += oldlag
-                            if lag > 0.5:
-                                kmin = k1
-                                lag -= 1
-                            if lag < -0.5:
-                                kmin = k1
-                                lag += 1
-                        oldldr = ldr[kmin]
-                        oldlag = lag
+                                a = -a/b
+                                b = ldr[kmin][1]
+                                if abs(a) < abs(b):
+                                    lag = a - ldr[kmin][0]
+                                else: lag = 0
+                            # if we keep going the same way, correct with the lag
+                            if (ldr[kmin] == oldldr):
+                                lag += oldlag
+                                if lag > 0.5:
+                                    kmin = k1
+                                    lag -= 1
+                                if lag < -0.5:
+                                    kmin = k1
+                                    lag += 1
+                            oldldr = ldr[kmin]
+                            oldlag = lag
 
                     ############# end of the correction block #################
 
@@ -623,13 +872,11 @@ class ThalwegNetwork:
 
         """
         for ipt, pt in self.nodedict.items():
-            # -1 is the id of the virtual pit closing outside the domain
+            # -1 is the id of the virtual pit outside the domain
             if ipt == -1: # to be handled separately
-                boundary = self.terrain.boundary
-                inbound = self.terrain.inbound
                 thalweglist = pt['thalweg']
                 try:
-                    thalweglist.sort(key = lambda it: df.getBoundaryIndex(self.thalwegdict[-it]['polyline'], boundary, inbound))
+                    thalweglist.sort(key = lambda it: self.terrain.getBoundaryIndex(self.thalwegdict[-it]['polyline'][-1:-3:-1]))
                 except:
                     print('Exception orderThalwegs around virtual pit')
                     break
@@ -757,7 +1004,7 @@ class ThalwegNetwork:
     def createHillPolygons(self):
         """
         Creates a shapely polygon from a set of thalwegs forming a hill. The 
-        method is used to maintain a ridge within a hill. Need to look
+        method is used to maintain a ridge within a hill.
 
         Parameters
         ----------
@@ -768,7 +1015,10 @@ class ThalwegNetwork:
 
         Returns
         -------
-        None.
+        hillpolygon : list of polygons
+            Polygons of hills defined as a shapely geometry
+        danglingmap : np.array
+            map where each pixel has the id of the dangling thalweg passing there
 
         """
         danglingmap = np.zeros((self.terrain.m, self.terrain.n))
@@ -838,8 +1088,8 @@ class ThalwegNetwork:
 
     def computeHills(self):
         """
-        Computes the dictionary of hills of the surface network. A hill is an
-        ascending manifold. It is formed by a series of thalwegs. The hill can
+        Computes the dictionary of hills of the surface network. A hill is a
+        descending manifold. It is formed by a series of thalwegs. The hill can
         contain some holes.
         Each hill is defined by a series of thalwegs forming the boundary and
         a series of holes formed each by a list of thalwegs. Thalwegs are oriented
@@ -866,7 +1116,6 @@ class ThalwegNetwork:
     
         for ipt in saddlelist:
             pt = self.nodedict[ipt]
-                    
             # we get the list of thalwegs
             thalweglist = pt['thalweg']
             # we need at least two thalwegs to create a hill
@@ -897,13 +1146,12 @@ class ThalwegNetwork:
                     ymax = max(pointlist, key = lambda a: a[1])[1]
                     area = (xmax - xmin) * (ymax - ymin)
                     arealist.append(area)
-                border = thalwegring.pop(0)
-                holes = thalwegring
                 # if the first ring is not the biggest, the hill is a hole in a larger one
                 # we discard everything outside the hole
-                if max(arealist) != arealist[0]:
-                    holes = []
-                    thalwegline = []
+                maxarea = max(arealist)
+                maxindex = arealist.index(maxarea)
+                border = thalwegring.pop(maxindex)
+                holes = thalwegring
                 
                 self.hilldict[hillkey] = {'boundary': border, 
                                           'hole': holes,

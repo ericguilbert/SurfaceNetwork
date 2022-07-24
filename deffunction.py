@@ -8,7 +8,6 @@ deffunction.py:
 """
 
 import math
-from matplotlib.pylab import * # check if used
 
 from collections import deque
 
@@ -24,17 +23,22 @@ RIDGE = 1
 RIDWEG = -5  # overlapping ridge and thalweg, not used
 JUNCTION = 2
 PEAK = 3
+SPRING = 5 # duplicated node for single flow
 SLOPE = 99
 
 ldr8 = ((-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1))
 ldr4 = ((-1, 0), (0, 1), (1, 0), (0, -1))
 order4 = ((-1, 0), (0, -1), (0, 1), (1, 0)) # lexicographic order of neighbours
+order8 = ((-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1))
 
 # step for gradient descent on bilinear patches
 step = 0.1
 
 # epsilon defining numerical zero
 epsilon = 1.e-02
+
+# length diagonal/gradient point
+distancefactor = 2/3
 
 def gradLength(z, v, ldr):
     """
@@ -67,9 +71,33 @@ def gradLength(z, v, ldr):
         if dr[0] == 0 or dr[1] == 0:
             dz.append(p - z) # the norm is simply the height difference
         else:
-            dz.append((p - z) * 2 / 3) # 2/3 of the height difference
+            #dz.append((p - z) * 2 / 3) # 2/3 of the height difference
+            dz.append((p - z) * distancefactor) # 2/3 of the height difference
     return dz
 
+
+def length(polyline):
+    """
+    Computes the length of a polyline defined by a series of points
+
+    Parameters
+    ----------
+    polyline : list of pairs of integers corresponding to pixel coordinates
+
+    Returns
+    -------
+    length: the length of the polyline in pixels.
+
+    """
+    length = 0
+    n = len(polyline)
+    p1 = polyline[0]
+    for i in range(1,n):
+        p = polyline[i]
+        dp = math.hypot(p[0]-p1[0], p[1]-p1[1])
+        length += dp
+        p1 = p
+    return length
 
 def lexicoSign(di, dj):
     """
@@ -215,6 +243,34 @@ def getBoundaryIndex(polyline, boundary, inbound):
         print('getBoundaryIndex', polyline[-2:])
         print('Exception message: {!s}'.format(e))
 
+
+def getBoundaryIndex2(polyline, boundary, inbound):
+    """
+    The function returns the position of the first two points inside the terrain boundaries:
+    It returns the position of the first point along the outer boundary and the 
+    position of the second point along the inner boundary
+    This is used as a key to sort ridges around the virtual pit.
+
+    Parameters
+    ----------
+    polyline : list of pairs
+        polyline defined by a list of (i,j) coordinates.
+    boundary : list of pairs
+        list of points defining the outer boundary (all points are outside the terrain).
+    inbound : list of pairs
+        list of points defining the inner boundary (all points are inside the terrain).
+
+    Returns
+    -------
+    pair of integer
+        The index of the points inside the boundary and the inner boundary.
+
+    """
+    try:
+        return boundary.index(polyline[0]), inbound.index(polyline[1])
+    except Exception as e:
+        print('getBoundaryIndex', polyline[:1])
+        print('Exception message: {!s}'.format(e))
 
 def getNeighbourPoints(nodelist):
     """
@@ -426,30 +482,32 @@ def sideOfLine(line, i, pt):
     p = line[i]
     q = line[i-1]
     r = line[i+1]
+    
+    # correction 2 juin
+    if pt in (p, q, r):
+        return 0
+        
     u = (pt[0] - p[0], pt[1] - p[1])
     v1 = (q[0] - p[0], q[1] - p[1])
     v2 = (r[0] - p[0], r[1] - p[1])
     if q==r:
+        #print('error sideOfLine first point == last point', p, pt)
         v1=(-v2[0], -v2[1])
-    
-    sign1 = v1[0]*u[1] - v1[1]*u[0]
-    sign2 = v2[0]*u[1] - v2[1]*u[0]
-    
-    if sign1 > 0 and sign2 < 0:
-        return 1
-    if sign1 < 0 and sign2 > 0:
-        return -1
-    
-    if v1[0]*u[0] + v1[1]*u[1] > 0:
-        if sign1 > 0:
-            return 1
-        elif sign1 < 0: 
+        
+    iu = ldr8.index(u)
+    iv1 = ldr8.index(v1)
+    iv2 = ldr8.index(v2)
+    if iv1<iv2:
+        if iu>iv1 and iu<iv2:
             return -1
-        return 0
-    if sign2 < 0:
-        return 1
-    elif sign2 > 0:
-        return -1
+        else:
+            return 1
+    else:
+        if iu>iv1 or iu<iv2:
+            return -1
+        else:
+            return 1
+    print("sideOfLine", pt, p)
     return 0
 
 def sideOfWedge(wedge, pt):
