@@ -178,14 +178,12 @@ class SurfaceNetwork(ThalwegNetwork):
             # if we leave a dangling thalweg
             if danglingconfluence:
                 tside = df.sideOfWedge(confluencewedge, ij) * thalwegside
-#                                print('xx', confluencewedge, ij, thalwegside, tside)
             elif dtoverlap > 0 and thalwegside != 0:
                 tmppoly = self.thalwegdict[dtoverlap]['polyline']
                 kt = tmppoly.index((i,j))
                 #if danglingmap[ij] <= 0:
                 if danglingmap[ij] != dtoverlap:
                     # get the thalweg point
-                    #print('oo',ij, dtoverlap, danglingmap[ij], thalwegside)
                     tside = df.sideOfLine(tmppoly, kt, ij) * thalwegside
                 elif ij in tmppoly:
                     kij = tmppoly.index(ij)
@@ -405,9 +403,10 @@ class SurfaceNetwork(ThalwegNetwork):
                 else:
                     pright = self.thalwegdict[-tright]['polyline'][-2]
                 # ileft and iright are the neighbour pixels where the thalwegs pass through
+                #print('tleft, tright', t, tright, ihill)
+                #print('p', ipt, orderedneighbours)
                 ileft = orderedneighbours.index(pleft)
                 iright = orderedneighbours.index(pright)
-                #print('tleft, tright', t, tright, ihill)
                 #print('ileft, iright', ileft, iright)
                 # slopeneighbours is the list of pixels between the thalwegs
                 slopeneighbours = []
@@ -482,8 +481,8 @@ class SurfaceNetwork(ThalwegNetwork):
                                 z1 = self.terrain.dtm[p[0]+dp1[0], p[1]+dp1[1]]
                                 z2 = self.terrain.dtm[p[0]+dp2[0], p[1]+dp2[1]]
                                 dz = df.gradLength(pt['z'], [z1, z2], ldr)
-                                if k > 2:
-                                    print(k, ipt, pleft, pright, ldr, [z1, z2], dz)
+                                #if k > 2:
+                                #    print(k, ipt, pleft, pright, ldr, [z1, z2], dz)
                                 k += 1
                             if not ((dz[1] > dz[0] and pleft == polylist[1]) or (dz[0] > dz[1] and pright == polylist[1])):
                                 #print("on n'y va pas")
@@ -526,6 +525,8 @@ class SurfaceNetwork(ThalwegNetwork):
         nextridge = max(self.ridgedict) + 1
         # hill polygons and map of dangling thalwegs
         hillpolygon, danglingmap = self.createHillPolygons()
+        
+        pixelclass = self.terrain.pixelclass
 
 #        testir = [10363]
         for ihill in self.hilldict:
@@ -571,7 +572,7 @@ class SurfaceNetwork(ThalwegNetwork):
                         tmppoly = self.thalwegdict[dtoverlap]['polyline']
                         kt = tmppoly.index((i,j))
                         if kt == 0:
-                            print('kt = 0, thalweg', dtoverlap, 'ridge', ir)
+                            #print('kt = 0, thalweg', dtoverlap, 'ridge', ir)
                             thalwegside = 0
                         else:
                             thalwegside = df.sideOfLine(tmppoly, kt, polylist[0])
@@ -589,6 +590,7 @@ class SurfaceNetwork(ThalwegNetwork):
                 
                 oldlag = 0
                 oldldr = (0,0)
+                oldij = (i,j)
                 while keepgoing:
                     if nextrounds:
                         ldr = self.terrain.neighbour[i,j]
@@ -626,7 +628,7 @@ class SurfaceNetwork(ThalwegNetwork):
                     # no dangling thalweg under this pixel
                     if dtoverlap <= 0:
                         # if we reach a confluence
-                        if self.terrain.pixelclass[i,j] == df.CONFLUENCE:
+                        if pixelclass[i,j] == df.CONFLUENCE:
                             iconf = self.nodeidx[(i,j)]
                             confthalweg = self.nodedict[iconf]['thalweg']
                             # check if first node of dangling thalweg
@@ -649,7 +651,7 @@ class SurfaceNetwork(ThalwegNetwork):
                     # if we are on a dangling thalweg
                     else:
                         # if it is a confluence (that's the last pixel of the thalweg)
-                        if self.terrain.pixelclass[i,j] == df.CONFLUENCE:
+                        if pixelclass[i,j] == df.CONFLUENCE:
                             iconf = self.nodeidx[(i,j)]
                             lthalweg = self.nodedict[iconf]['thalweg']
                             ithalweg = lthalweg.index(dtoverlap)
@@ -665,30 +667,67 @@ class SurfaceNetwork(ThalwegNetwork):
                                 it3 = df.getSecondPointPosition(lthalweg[kthalweg])
                                 p2 = self.thalwegdict[abs(lthalweg[jthalweg])]['polyline'][it2]
                                 p3 = self.thalwegdict[abs(lthalweg[kthalweg])]['polyline'][it3]
-                                confluencewedge = (p3, (i,j), p2)
-                                thalwegside = df.sideOfWedge(confluencewedge, p1)
+                                # ajout 7/9/22
+                                p4 = polylist[-2]
+                                wedge2 = (p1, (i,j), p2)
+                                wedge3 = (p1, (i,j), p3)
+                                side23 = df.sideOfWedge(wedge2, p3)
+                                side24 = df.sideOfWedge(wedge2, p4)
+                                side32 = df.sideOfWedge(wedge3, p2)
+                                side34 = df.sideOfWedge(wedge3, p4)
+                                side2 = side23 * side24
+                                side3 = side32 * side34
+                                if side2 < 0:
+                                    confluencewedge = wedge2
+                                    thalwegside = side24
+                                elif side3 < 0:
+                                    confluencewedge = wedge3
+                                    thalwegside = side34
+                                elif side3 > 0:
+                                    confluencewedge = wedge2
+                                    thalwegside = side24
+                                elif side2 > 0:
+                                    confluencewedge = wedge3
+                                    thalwegside = side34
+                                # remplace
+                                #thalwegside = df.sideOfWedge(confluencewedge, p1)
+                                # fin ajout 7/9/22
                             # if we know on which side to stay
                             else:
                                 jthalweg = ithalweg + thalwegside
                                 if jthalweg == len(lthalweg):
                                     jthalweg = 0
-                                #print(ipt, 'reached confluence', iconf, lthalweg[jthalweg], thalwegside)
+                                kthalweg = ithalweg - thalwegside
+                                if kthalweg == len(lthalweg):
+                                    kthalweg = 0
                                 it2 = df.getSecondPointPosition(lthalweg[jthalweg])
+                                it3 = df.getSecondPointPosition(lthalweg[kthalweg])
                                 p2 = self.thalwegdict[abs(lthalweg[jthalweg])]['polyline'][it2]
+                                p3 = self.thalwegdict[abs(lthalweg[kthalweg])]['polyline'][it3]
                                 confluencewedge = (p1,(i,j),p2)
+                                side23 = df.sideOfWedge(confluencewedge, p3)
+                                thalwegside = -side23
+                                print('reached confluence', dtoverlap, lthalweg[jthalweg], thalwegside)
+                                dtoverlap = lthalweg[jthalweg]
                             danglingconfluence = True
                         # if we are not at a confluence (regular thalweg pixel)
                         else:
-                            if oldoverlap > 0 and dtoverlap != oldoverlap and self.terrain.pixelclass[i,j] != df.SADDLE:
-                                thalwegside = 0
-                            # if we don't know on which side to stay, find it out
-                            if thalwegside == 0:
-                                #print('xx', dtoverlap, (i,j))
+                            # correction 8/9/22
+                            if oldoverlap > 0 and dtoverlap != oldoverlap and pixelclass[i,j] != df.SADDLE:
                                 tmppoly = self.thalwegdict[dtoverlap]['polyline']
                                 kt = tmppoly.index((i,j))
                                 if kt != 0:
                                     thalwegside = df.sideOfLine(tmppoly, kt, oldij)
-                                #print(ir, 'thalwegside = ', thalwegside)
+                                else:
+                                    thalwegside = 0
+                            # fin correction
+                            # if we don't know on which side to stay, find it out
+                            if thalwegside == 0:
+                                tmppoly = self.thalwegdict[dtoverlap]['polyline']
+                                kt = tmppoly.index((i,j))
+                                if kt != 0:
+                                    #print("ça va planter", kt, i,j, ir, dtoverlap, oldij)
+                                    thalwegside = df.sideOfLine(tmppoly, kt, oldij)
                             # if there is already a ridge here
                             if (i,j) in floorkey:
                                 #if len(ridgeindangling[(i,j)]) > 1:
@@ -709,15 +748,15 @@ class SurfaceNetwork(ThalwegNetwork):
                         print("we're out")
                         
                     # check what kind of pixel we reach and whether we keep going
-                    if self.terrain.pixelclass[i,j] == df.SLOPE:
+                    if pixelclass[i,j] == df.SLOPE:
                         # nothing special, keep going
                         keepgoing = True
-                        self.terrain.pixelclass[i,j] = df.RIDGE
+                        pixelclass[i,j] = df.RIDGE
                         floorkey[i,j] = ir
                     # if divide is false (default) confluences are not considered 
                     # as end points since ridges only start from saddles
                     # if divide is true, ridges can start and end at confluences
-                    elif self.terrain.pixelclass[i,j] == df.THALWEG or (self.terrain.pixelclass[i,j] == df.CONFLUENCE and not divide):
+                    elif pixelclass[i,j] == df.THALWEG or (pixelclass[i,j] == df.CONFLUENCE and not divide):
                         if (i,j) in floorkey: # we reach a ridge
                             if not okjoin:
                                 junction = False
@@ -730,7 +769,7 @@ class SurfaceNetwork(ThalwegNetwork):
                         else:
                             keepgoing = True
                             floorkey[i,j] = ir
-                    elif divide and self.terrain.pixelclass[i,j] == df.CONFLUENCE:
+                    elif divide and pixelclass[i,j] == df.CONFLUENCE:
                         if (i,j) in floorkey:
                             junction = False
                             keepgoing = False
@@ -742,7 +781,7 @@ class SurfaceNetwork(ThalwegNetwork):
                                 ridgeindangling[(i,j)] = [(ir, thalwegside)]
                             keepgoing = False
                             junction = False
-                    elif self.terrain.pixelclass[i,j] == df.RIDGE:
+                    elif pixelclass[i,j] == df.RIDGE:
                         keepgoing = False
                         junction = True
                     else: # ridge terminates at a saddle or peak
@@ -753,7 +792,7 @@ class SurfaceNetwork(ThalwegNetwork):
             
                 if validridge:
 #                    idend = -1
-#                    if self.terrain.pixelclass[i,j] == CONFLUENCE:
+#                    if pixelclass[i,j] == CONFLUENCE:
 #                        print('Ridge reached a confluence', ipt, ridgekey, i,j)
                     if junction:                    
                         # if we reach an existing ridge, we have to create a junction
@@ -774,8 +813,8 @@ class SurfaceNetwork(ThalwegNetwork):
                             'type' : df.JUNCTION
                         }
                         #print(endindex, ir, idridge, nextridge, self.nodedict[endindex])
-                        if self.terrain.pixelclass[i,j] == df.RIDGE:
-                            self.terrain.pixelclass[i,j] = df.JUNCTION
+                        if pixelclass[i,j] == df.RIDGE:
+                            pixelclass[i,j] = df.JUNCTION
                         self.nodekey += 1
                         # split the existing ridge in two
                         r = self.ridgedict[idridge]
@@ -818,7 +857,7 @@ class SurfaceNetwork(ThalwegNetwork):
                         nextridge += 1
                     else:
                         endindex = self.nodeidx[(i,j)]
-                        #if self.terrain.pixelclass[i,j] == df.CONFLUENCE:
+                        #if pixelclass[i,j] == df.CONFLUENCE:
                         #    print('Ridge reached a confluence', ipt, ir, i,j)
 
                     # the last point is a critical point
@@ -870,7 +909,7 @@ class SurfaceNetwork(ThalwegNetwork):
                 hill1 = self.ridgedict[abs(ir1)]['hill']
                 hill2 = self.ridgedict[abs(ir2)]['hill']
                 if hill1 == hill2:
-                    print("in orderRidgeAroundNodes, check", ipt, ir1, ir2)
+                    #print("in orderRidgeAroundNodes, check", ipt, ir1, ir2)
                     continue
                 if pt['type'] == df.SADDLE and ir1 < 0 and ir2 < 0:
                     secondpoint = self.ridgedict[-ir1]['polyline'][-2]
@@ -1404,8 +1443,8 @@ class SurfaceNetwork(ThalwegNetwork):
                     z1 = self.terrain.dtm[p[0]+dp1[0], p[1]+dp1[1]]
                     z2 = self.terrain.dtm[p[0]+dp2[0], p[1]+dp2[1]]
                     dz = df.gradLength(pt['z'], [z1, z2], ldr)
-                    if k > 2:
-                        print(k, ipt, ldr, [z1, z2], dz)
+                    #if k > 2:
+                    #    print(k, ipt, ldr, [z1, z2], dz)
                     k += 1
                 if dz[0] < dz[1]:
                     t['dale'] = r['rightdale']
