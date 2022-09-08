@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-streamnetwork: class computing puddles and a flow direction for thalwegs
-	puddles are sets of points where the flow needs to be redirected
-	They are used to direct the flow without interruption towards the outlets
+Created on Tue Feb  4 15:19:05 2020
 
-@author: Eric Guilbert
+@author: ERGUI19
 """
 from collections import deque
+import array
 import deffunction as df
 from thalwegnetwork import ThalwegNetwork
 
@@ -479,7 +478,7 @@ class StreamNetwork(ThalwegNetwork):
                         tmp = (ipuddle, jpuddle)
                         pairstobemerged.add(tmp)
         # merge the puddles that flow into each other
-        print(pairstobemerged)
+        #print(pairstobemerged)
         tobemerged = []
         while pairstobemerged:
             loop = set(pairstobemerged.pop())
@@ -507,7 +506,9 @@ class StreamNetwork(ThalwegNetwork):
                 del self.puddledict[jpuddle]
 
     def mergeIntersectingPuddles(self):
-        keys = [key for key in self.puddledict]
+        #keys = [key for key in self.puddledict]
+        keylist = [key for key in self.puddledict]
+        keys = array.array('l', keylist)
         
         tobemerged = []
         n = len(keys)
@@ -520,8 +521,19 @@ class StreamNetwork(ThalwegNetwork):
                 ninter = len(intersection)
                 if ninter > 1:
                         tobemerged.append((ipuddle, jpuddle))
+        replace = {}
+        print(tobemerged)
         for (i,j) in tobemerged:
-            seed = self.puddledict[i]['nodes'].union(self.puddledict[j]['nodes'])
+            try:
+                if i in replace:
+                    i = replace[i]
+                while j in replace:
+                    j = replace[j]
+                if i == j:
+                    continue
+                seed = self.puddledict[i]['nodes'].union(self.puddledict[j]['nodes'])
+            except KeyError as err:
+                print("mergeIntersectingPuddles KeyError", err, "keys", i, j)
             # build the new puddle
             nodes, outlet, outflow = self.floodPuddle(seed)
             # store the new puddle
@@ -530,6 +542,8 @@ class StreamNetwork(ThalwegNetwork):
                                   'outflow': outflow}
             # delete the old puddles
             del self.puddledict[j]
+            replace[j] = i
+            print(replace)
         
     # def mergeIntersectingPuddles(self):
     #     outletidx = {self.puddledict[ip]['outlet']: ip for ip in self.puddledict}
