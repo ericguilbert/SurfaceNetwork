@@ -1,11 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-extendedsurfacenetwork: class that extends the definition of the surface network
-	Ridges are computed at pits and confluences.
-	Dales are redefined for each thalweg
-	Add properties to compute the flow accumulation, drainage bassins and the Strahler order
+Created on Tue Aug 5 21:30:05 2020
 
-@author: Eric Guilbert
+@author: ERGUI19
 """
 from time import perf_counter_ns
 from math import sqrt, atan, pi
