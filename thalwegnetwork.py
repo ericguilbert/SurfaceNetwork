@@ -328,6 +328,24 @@ class ThalwegNetwork:
                     if conflictline:
                         conflictsaddle.append((si, conflictline))
                 if removable: # the saddle is not in conflict, it is removed from the cluster
+                    # lines from dline must be preserved if other saddles are modified
+                    for l in dline:
+                        # get l endpoints
+                        p1 = l[0]
+                        p2 = l[1]
+                        # take the points on the other diagonal
+                        q1 = (p1[0], p2[1])
+                        q2 = (p2[0], p1[1])
+                        # check if there is a saddle at each point
+                        for si in saddlelist:
+                            saddle = saddledict[si]
+                            if saddle['ij'] == q1:
+                                dq = (q2[0] - q1[0], q2[1] - q1[1])
+                                saddleneighbour[si].remove(dq)
+                            elif saddle['ij'] == q2:
+                                dq = (q1[0] - q2[0], q1[1] - q2[1])
+                                saddleneighbour[si].remove(dq)
+                            
                     saddlelist.remove(iminsaddle)
                     continue
                 # we have the list of saddles in conflict with minsaddle
