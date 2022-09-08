@@ -338,6 +338,10 @@ class Terrain:
             if instart == self.m:
                 instart = 0
                 jnstart += 1
+                if jnstart == self.n:
+                    instart = 0
+                    jnstart = 0
+                    break
         # instart,jnstart is the first pixel inside the terrain
         istart = instart - 1
         jstart = jnstart # istart, jstart is on the outer boundary
@@ -570,11 +574,13 @@ class Terrain:
         # diag = -1*ones((m-1,n-1)) # sw-ne orientation
 
         # set the diagonals around passes according to ridges and thalwegs
+        tmp = 0
         for ipss, pss in passdict.items():
             linelist = pss['line']
             for l in linelist:
                 p1 = l[0]
                 p2 = l[1]
+                
                 # if the line is diagonal
                 if p1[0] != p2[0] and p1[1] != p2[1]:
                     # check which diagonal it is
