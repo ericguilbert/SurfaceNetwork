@@ -518,23 +518,33 @@ def sideOfWedge(wedge, pt):
     v1 = (q[0] - p[0], q[1] - p[1])
     v2 = (r[0] - p[0], r[1] - p[1])
     
+    # sign of cross product
     sign1 = v1[0]*u[1] - v1[1]*u[0]
     sign2 = v2[0]*u[1] - v2[1]*u[0]
     
     #print(u, v1, v2, sign1, sign2)
+    # sign1 > 0 if u is on the left of v1
+    # sign2 > 0 if u is on the left of v2
     if sign1 > 0 and sign2 < 0:
         return 1
     if sign1 < 0 and sign2 > 0:
         return -1
     
-    if v1[0]*u[0] + v1[1]*u[1] > 0:
+    v1u = v1[0]*u[0] + v1[1]*u[1]
+    if v1u > 0:
         if sign1 > 0:
             return 1
         elif sign1 < 0: 
             return -1
         return 0
-    if sign2 < 0:
+    if v1u < 0:
+        if sign2 < 0:
+            return 1
+        elif sign2 > 0:
+            return -1
+    v2u = v2[0]*u[0] + v2[1]*u[1]
+    if v2u < 0:
         return 1
-    elif sign2 > 0:
+    if v2u > 0:
         return -1
     return 0
