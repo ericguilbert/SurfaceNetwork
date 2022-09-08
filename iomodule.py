@@ -371,11 +371,14 @@ def writeGpkgThalweg(linedict, directory, linename, terrain):
     linelayer.CreateField(ogr.FieldDefn("id", ogr.OFTInteger))
     linelayer.CreateField(ogr.FieldDefn("start", ogr.OFTInteger))
     linelayer.CreateField(ogr.FieldDefn("end", ogr.OFTInteger))
-    linelayer.CreateField(ogr.FieldDefn("accumulation", ogr.OFTReal))
+    accumulationfield = False
     orderfield = False
     hortonfield = False
     slopefield = False
     key = list(linedict)[0]
+    if 'accumulation' in linedict[key]:
+        linelayer.CreateField(ogr.FieldDefn("accumulation", ogr.OFTReal))
+        accumulationfield = True
     if 'order' in linedict[key]:
         linelayer.CreateField(ogr.FieldDefn("order", ogr.OFTInteger))
         orderfield = True
@@ -394,7 +397,8 @@ def writeGpkgThalweg(linedict, directory, linename, terrain):
         feature.SetField("id", id)
         feature.SetField("start", line['start'])
         feature.SetField("end", line['end'])
-        feature.SetField("accumulation", float(line['accumulation']))
+        if accumulationfield:
+            feature.SetField("accumulation", float(line['accumulation']))
         if orderfield:
             feature.SetField("order", line['order'])
         if hortonfield:
