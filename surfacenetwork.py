@@ -195,9 +195,10 @@ class SurfaceNetwork(ThalwegNetwork):
                 if checkcovers:
                     line = shapely.geometry.LineString([(i, j), (ij[0], ij[1])])
                     covers = plgn.relate_pattern(line, '******FF*')
-            except:
-                print('in computeAscent topology exception from shapely', i,j)
+            except Exception as err:
+                print(err, 'in computeAscent topology exception from shapely', i,j)
                 validridge = False
+                return validridge, kmax, inlist
             #print(ij, covers, tside)
             if covers and tside >= 0:
                 inlist.append(ldr[kk])
@@ -597,10 +598,12 @@ class SurfaceNetwork(ThalwegNetwork):
                         v = self.terrain.getNeighbourHeights(i, j)
                         z = self.terrain.dtm[i,j]
     
+                        #print(plgn)                    
                         [validridge, kmax, inlist] = self.computeAscent(i, j, v, z, ldr, plgn, danglingconfluence, confluencewedge, thalwegside, dtoverlap, danglingmap)
 
                         if not validridge:
                             print('validridge', ir, ihill)
+                            exit(0)
                         oldij = (i,j) # used later to check sides
                         
                         # the steepest gradient is for v[kmax]
@@ -707,7 +710,6 @@ class SurfaceNetwork(ThalwegNetwork):
                                 confluencewedge = (p1,(i,j),p2)
                                 side23 = df.sideOfWedge(confluencewedge, p3)
                                 thalwegside = -side23
-                                print('reached confluence', dtoverlap, lthalweg[jthalweg], thalwegside)
                                 dtoverlap = lthalweg[jthalweg]
                             danglingconfluence = True
                         # if we are not at a confluence (regular thalweg pixel)
@@ -873,7 +875,6 @@ class SurfaceNetwork(ThalwegNetwork):
                     self.ridgedict[ir]['end'] = endindex
                     if thalwegside:
                         self.ridgedict[ir]['endside'] = thalwegside
-
 
     def orderRidgesAroundNodes(self):
         """

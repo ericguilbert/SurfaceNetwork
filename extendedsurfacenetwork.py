@@ -273,6 +273,40 @@ class ExtendedSurfaceNetwork(SurfaceNetwork, StreamNetwork):
         for ir in divideside:
             self.ridgedict[ir]['startside'] = divideside[ir]
 
+    def orderRidgesAroundVirtualPit(self):
+        pt = self.nodedict[-1]
+        ridgelist = pt['ridge']
+        if len(ridgelist) < 2:
+            return
+        boundary = self.terrain.boundary
+        inbound = self.terrain.inbound
+        try:
+            boundaryposition = {ir: boundary.index(self.ridgedict[ir]['polyline'][0]) for ir in ridgelist}
+            inboundposition = {ir: inbound.index(self.ridgedict[ir]['polyline'][1]) for ir in ridgelist}
+            outlist = sorted(ridgelist, key = lambda ir: boundaryposition[ir])
+            inlist = sorted(ridgelist, key = lambda ir: inboundposition[ir])
+            misplaced = [(outlist[i],inlist[i]) for i in range(len(outlist)) if outlist[i]!=inlist[i]]
+            while misplaced:
+                for position in misplaced:
+                    ir0 = position[0]
+                    ir1 = position[1]
+                    indiceout = [i for i, p in enumerate(boundary) if p == self.ridgedict[ir0]['polyline'][0]]
+                    indicein = [i for i, p in enumerate(inbound) if p == self.ridgedict[ir1]['polyline'][1]]
+                    if len(indiceout) > 1:
+                        boundaryposition[ir0] = indiceout[1]
+                    if len(indicein) > 1:
+                        inboundposition[ir1] = indicein[1]
+                outlist = sorted(ridgelist, key = lambda ir: boundaryposition[ir])
+                inlist = sorted(ridgelist, key = lambda ir: inboundposition[ir])
+                misplaced = [(outlist[i],inlist[i]) for i in range(len(outlist)) if outlist[i]!=inlist[i]]
+                print(misplaced)
+                print(outlist[21:25], inlist[21:25])
+            ridgelist = outlist
+        except:
+            print('Exception orderRidges around virtual pit')
+        self.nodedict[-1]['ridge'] = ridgelist
+        print(self.nodedict[-1]['ridge'][21:25])
+        
     def orderRidgesAroundNodes(self):
         """
         Orders the list of ridges around each node in a clockwise order 
@@ -291,14 +325,7 @@ class ExtendedSurfaceNetwork(SurfaceNetwork, StreamNetwork):
             if nr < 2:
                 continue
             if ipt == -1:
-                boundary = self.terrain.boundary
-                inbound = self.terrain.inbound
-                ridgelist = pt['ridge']
-                try:
-                    ridgelist.sort(key = lambda ir: df.getBoundaryIndex2(self.ridgedict[ir]['polyline'], boundary, inbound))
-                except:
-                    print('Exception orderRidges around virtual pit')
-                    break
+                self.orderRidgesAroundVirtualPit()
             elif ipt < -1:
                 # holes must be virtual pits with id<-1
                 # get all the neighbours around the saddles
@@ -693,11 +720,17 @@ class ExtendedSurfaceNetwork(SurfaceNetwork, StreamNetwork):
             node = self.nodedict[currentnode]
             ridges = set(node['ridge']) & ridgeset
             if len(ridges) > 1:
-                print("problem, two ridges at node", currentnode, ridges)
-                index = node['ridge'].index(-iridge) + 1
-                if index >= len(node['ridge']):
-                    index = 0
-                iridge = node['ridge'][index]
+                print("problem, two ridges at node", currentnode, iridge, ridges)
+                print(self.nodedict[currentnode]['ridge'])
+                ihill = self.ridgedict[-iridge]['hill']
+                for lr in ridges:
+                    if self.ridgedict[abs(lr)]['hill'] == ihill:
+                        iridge = lr
+                        break
+                #index = node['ridge'].index(-iridge) + 1
+                #if index >= len(node['ridge']):
+                #    index = 0
+                #iridge = node['ridge'][index]
                 if not iridge in ridges:
                     print("problem finding the next ridge", currentnode, iridge)
             else:
@@ -903,3 +936,209 @@ class ExtendedSurfaceNetwork(SurfaceNetwork, StreamNetwork):
             slope = 180*atan(slope)/pi
             r['slope'] = slope
 
+    def getHill(self, idpeak):
+        """
+        Returns the hill id that contains the peak idpeak
+
+        Parameters
+        ----------
+        idpeak : integer
+            id of the peak.
+
+        Returns
+        -------
+        integer
+            id of the hill defined in the hilldict.
+
+        """
+        ridges = self.nodedict[idpeak]['ridge']
+        ridge = -ridges[0]
+        return self.ridgedict[ridge]['hill']
+    
+    def getPeak(self, idhill):
+        """
+        Returns the peak contained in a hill
+
+        Parameters
+        ----------
+        idhill : integer
+            id of the hill.
+
+        Returns
+        -------
+        ipt : integer
+            id of the peak contained by the hill.
+
+        """
+        ridges = self.hilldict[idhill]['ridge']
+        for ir in ridges:
+            r = self.ridgedict[ir]
+            ipt = r['end']
+            if self.nodedict[ipt]['type'] == df.PEAK:
+                return ipt
+        print("Error no peak in hill")
+        
+    def getNeighbourHills(self, idhill):
+        """
+        Returns a set of hills neighbouring the hill. The set is not ordered
+        and each hill appears only once. The set does not include hills within
+        that form a hole.
+
+        Parameters
+        ----------
+        idhill : integer
+            id of the hill.
+
+        Returns
+        -------
+        neighbours : set
+            the ids of the neighbouring hills.
+
+        """
+        hill = self.hilldict[idhill]
+        neighbours = set()
+        boundary = hill['boundary']
+        for it in boundary:
+            if it > 0:
+                neighbours.add(self.thalwegdict[it]['lefthill'])
+            else:
+                neighbours.add(self.thalwegdict[-it]['righthill'])
+        return neighbours
+    
+    def getInnerHills(self, idhill):
+        """
+        Returns a set of hills located within the hill. The set is not ordered
+        and each hill appears only once. These hills are holes in the hill.
+
+        Parameters
+        ----------
+        idhill : integer
+            id of the hill.
+
+        Returns
+        -------
+        neighbours : set
+            the ids of the hills within.
+
+        """
+        hill = self.hilldict[idhill]
+        neighbours = set()
+        holes = hill['hole']
+        for it in holes:
+            if it > 0:
+                neighbours.add(self.thalwegdict[it]['lefthill'])
+            else:
+                neighbours.add(self.thalwegdict[it]['righthill'])
+        return neighbours
+    
+    def getPathToPeak(self, idridge):
+        """
+        Computes a path along the ridges up to a peak starting at a given ridge.
+        The path is given by a succession of ridges and goes upward to the peak
+        located in the same hill as the initial ridge.
+
+        Parameters
+        ----------
+        idridge : integer
+            ridge from which the path starts.
+
+        Returns
+        -------
+        path : list of integers
+            list of ridge ids forming a path to a peak.
+        jnode : integer
+            the id of the peak
+
+        """
+        r = self.ridgedict[idridge]
+        jnode = r['end']
+        jhill = r['hill']
+        node = self.nodedict[jnode]
+        path = [idridge]
+        while node['type'] != df.PEAK:
+            rlist = [ir for ir in node['ridge'] if ir > 0 and self.ridgedict[ir]['hill'] == jhill]
+            # if there are several ridges, take the steepest one
+            kmax = rlist[0]
+            maxslope = -1
+            for kr in rlist:
+                slope = self.ridgedict[kr]['slope']
+                if slope > maxslope:
+                    maxslope = slope
+                    kmax = kr
+            jr = kmax
+            jnode = self.ridgedict[jr]['end']
+            node = self.nodedict[jnode]
+            path.append(jr)
+        return path, jnode
+    
+    def computePathToPeak(self, inode, ihill):
+        """
+        Compute the ascending path from a node to a peak inside a given hill.
+
+        Parameters
+        ----------
+        inode : integer
+            index of the starting node.
+        ihill : integer
+            index of the hill.
+
+        Returns
+        -------
+        path : list of integers
+            list of ridge ids forming a path to a peak.
+        peaknode : integer
+            the id of the peak
+
+        """
+        node = self.nodedict[inode]
+        ridges = [ir for ir in node['ridge'] if ir>0]
+        maxslope = -1
+        kmax = ridges[0]
+        for kr in ridges:
+            r = self.ridgedict[kr]
+            if r['hill'] != ihill:
+                continue
+            slope = r['slope']
+            if slope > maxslope:
+                maxslope = slope
+                kmax = kr
+        path, peaknode = self.getPathToPeak(kmax)
+        return path, peaknode
+
+    def getPassBetweenHills(self, ihill, jhill):
+        """
+        For two adjacent hills, return the highest node located on the boundary
+        of the two hills. This node is located on the path connecting the two peaks
+
+        Parameters
+        ----------
+        ihill : integer
+            index of the first hill.
+        jhill : integer
+            index of the second hill.
+
+        Returns
+        -------
+        ipass : integer
+            index of the pass between the two hills.
+
+        """
+        # get the thalwegs between the two hills
+        ibound = self.hilldict[ihill]['boundary']
+        jbound = self.hilldict[jhill]['boundary']
+        boundary = [i for i in ibound if -i in jbound]
+        # get the nodes along this boundary
+        nodes = set()
+        for i in boundary:
+            t = self.thalwegdict[abs(i)]
+            nodes.add(t['start'])
+            nodes.add(t['end'])
+        # get the highest node of them
+        zmax = self.terrain.nodata
+        ipass = -1
+        for ip in nodes:
+            z = self.nodedict[ip]['z']
+            if z > zmax:
+                zmax = z
+                ipass = ip
+        return ipass

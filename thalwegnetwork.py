@@ -893,8 +893,10 @@ class ThalwegNetwork:
             # -1 is the id of the virtual pit outside the domain
             if ipt == -1: # to be handled separately
                 thalweglist = pt['thalweg']
+                boundary = self.terrain.boundary
+                inbound = self.terrain.inbound
                 try:
-                    thalweglist.sort(key = lambda it: self.terrain.getBoundaryIndex(self.thalwegdict[-it]['polyline'][-1:-3:-1]))
+                    thalweglist.sort(key = lambda it: df.getBoundaryIndex(self.thalwegdict[abs(it)]['polyline'], boundary, inbound))
                 except:
                     print('Exception orderThalwegs around virtual pit')
                     break
