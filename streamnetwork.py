@@ -237,11 +237,11 @@ class StreamNetwork(ThalwegNetwork):
     
         Parameters
         ----------
-        idpt : list of nodes forming a puddle.
+        idseed : list or set of nodes forming a puddle.
     
         Returns
         -------
-        puddle defined by a list of nodes.
+        puddle defined by a set of nodes.
         outlet is the node (a pass) where the flow pours out.
     
         """
@@ -303,90 +303,91 @@ class StreamNetwork(ThalwegNetwork):
         
         return puddle, outlet, outflow
         
+    def addPuddle(self, ipit, nodes, outlet, outflow):
+        """
+        Adds a puddle in the puddle dict. If a puddle with the same key already
+        exists, it is replaced. The method checks if the puddle overlaps other
+        existing puddles. If it is the case, a new puddle is computed by flooding
+        the area covered by both puddles.
+
+        Parameters
+        ----------
+        ipit : integer
+            The id of the puddle (if a new puddle, it is the id of its pit).
+        nodes : set of integer
+            The nodes that form the puddle. It includes the outlet but not the
+            pouring node which is outside the puddle.
+        outlet : integer
+            id of the node located at the outlet of the puddle. It is part of the
+            puddle.
+        outflow : integer
+            The pouring node in which the flow should go after the outlet. It is
+            not part of the puddle.
+
+        Returns
+        -------
+        None.
+
+        """
+        # check if there is an overlap
+        overlap = {self.puddlenodeidx[i] for i in nodes if self.puddlenodeidx[i]!= -1 and self.puddlenodeidx[i]!= ipit}
+        while overlap:
+            # gather all the nodes of the puddles in one single set
+            for ipuddle in overlap:
+                puddle = self.puddledict[ipuddle]
+                nodes.update(puddle['nodes'])
+                # update the pouring node index
+                pouringnode = puddle['outflow']
+                if pouringnode in self.pouringidx:
+                    self.pouringidx[pouringnode].remove(ipuddle)
+                    if not self.pouringidx[pouringnode]:
+                        del self.pouringidx[pouringnode]
+                # remove the puddle
+                del self.puddledict[ipuddle]
+            # reassign the nodes to the new puddle
+            for i in nodes:
+                self.puddlenodeidx[i] = ipit
+            # flood the puddle
+            nodes, outlet, outflow = self.floodPuddle(nodes)
+            overlap = {self.puddlenodeidx[i] for i in nodes if self.puddlenodeidx[i]!= -1 and self.puddlenodeidx[i]!= ipit}
+        # create or update the puddle
+        self.puddledict[ipit] = {'nodes': nodes,
+                                 'outlet': outlet,
+                                 'outflow': outflow}
+        # update the indexes
+        for i in nodes:
+            self.puddlenodeidx[i] = ipit
+        if outflow in self.pouringidx:
+            if ipit not in self.pouringidx[outflow]:
+                self.pouringidx[outflow].append(ipit)
+        else:
+            self.pouringidx[outflow] = [ipit]
+            
     def addPuddles(self):
         """
-        Add puddles to the drainage. A puddle is defined by a pit and the area 
-        up to its lowest saddle.
-        To be checked: if a pit is connected to only one thalweg, should we 
-        define a puddle since it does not interrupt any flow?
+        Create the puddle dictionany and add puddles in it. A puddle is defined 
+        by a pit and neighbouring nodes up to its lowest saddle.
     
         Returns
         -------
         None.
     
         """
-        self.puddledict = {}
-        #print("Warning: Pits with only one thalwegs are not considered as puddles")
+        self.puddledict = {} # dictionary containing the puddles
+        self.pouringidx = {}
+        nodedict = self.nodedict
+        self.puddlenodeidx = {i: -1 for i in nodedict if nodedict[i]['type']<=0}
         for ipit, pit in self.nodedict.items():
-#            if pit['type'] == df.PIT and ipit != -1 and len(pit['thalweg']) > 1:
-            if pit['type'] == df.PIT and ipit != -1:
+            if pit['type'] == df.PIT and ipit != -1: # no puddle at the virtual pit
+                # flood the puddle    
                 puddle, outlet, outflow = self.floodPuddle([ipit])
-                self.puddledict[ipit] = {'nodes': puddle,
-                                         'outlet': outlet,
-                                         'outflow': outflow}
-
-    def mergePuddlesSameOutlet(self):
-        """
-        Merge puddles sharing the same outlet into larger puddles.
-        At the end of the process, an outlet can be located in another puddle.
-        That means that both puddles overlap. It should not be a problem unless
-        in some test, puddles must be disjoint.
-    
-        Returns
-        -------
-        None.
-    
-        """
-        # sort puddles for each outlet
-        outletidx = {}
-        for ipuddle, puddle in self.puddledict.items():
-            outlet = puddle['outlet']    
-            if outlet in outletidx:
-                outletidx[outlet].append(ipuddle)
-            else:
-                outletidx[outlet] = [ipuddle]
-    
-        # list of all outlets of puddles to be merged
-        listtomerge = []
-        for idx in outletidx:
-            lpuddle = outletidx[idx]
-            if len(lpuddle) > 1:
-                listtomerge.append(idx)
-            
-        while listtomerge:
-            for idx in listtomerge:
-                lpuddle = outletidx[idx]
-                seed = []
-                # put all the nodes of the puddles in the same set
-                for jpuddle in lpuddle:
-                    seed.extend(self.puddledict[jpuddle]['nodes'])
-                nodes, outlet, outflow = self.floodPuddle(seed)
-                # the new puddle is stored in place of the first old puddle
-                ipuddle = lpuddle.pop()
-                self.puddledict[ipuddle] = {'nodes': nodes,
-                                            'outlet': outlet,
-                                            'outflow': outflow}
-                # other puddles are deleted
-                for jpuddle in lpuddle:
-                    del self.puddledict[jpuddle]
-                del outletidx[idx]
-                # if the new outlet is already the outlet of another puddle
-                # we add it to the puddle list
-                if outlet in outletidx:
-                    outletidx[outlet].append(ipuddle)
-                else:
-                    outletidx[outlet] = [ipuddle]
-            # rebuild the list of puddles to merge
-            listtomerge = []
-            for idx in outletidx:
-                lpuddle = outletidx[idx]
-                if len(lpuddle) > 1:
-                    listtomerge.append(idx)
+                # add it to the dictionary
+                self.addPuddle(ipit, puddle, outlet, outflow)
     
     def mergePuddlesSameOutflow(self):
         """
-        merge together puddles that have the same outflow and no other stream
-        to flow to, meaning that the flow is stuck there. The outflow is the
+        merge together puddles that have the same pouring node and no other stream
+        to flow to, meaning that the flow is stuck there. The pouring node is the
         node located downstream the outlet.
 
         Returns
@@ -394,55 +395,52 @@ class StreamNetwork(ThalwegNetwork):
         None.
 
         """
-        # sort puddles per outflow
-        outflowidx = {}
-        for ipuddle, puddle in self.puddledict.items():
-            outflow = puddle['outflow']
-            if outflow in outflowidx:
-                outflowidx[outflow].append(ipuddle)
-            else:
-                outflowidx[outflow] = [ipuddle]
         
-        outflowstack = []
-        listtomerge = []
-        for idx in outflowidx:
-            lpuddle = outflowidx[idx]
-            # if several puddles have the same outflow
-            if len(lpuddle) > 1:
-                outflowstack.append(idx)
+        # initialise the stack with pouring nodes common to several puddles
+        pouringstack = [inode for inode in self.pouringidx if len(self.pouringidx[inode])>1]
 
-        # outflowstack contains the list of outflows to be processed
-        while outflowstack:
-            outflow = outflowstack.pop()
-            # get the list of nodes connected to the outflow by a thalweg
-            lowerneighbours, higherneighbours = self.getThalwegNeighbourNodes(outflow)
-            nodeset = set()
-            # get the list of all nodes in the puddles connected to outflow
-            for ipuddle in outflowidx[outflow]:
-                nodeset = nodeset.union(self.puddledict[ipuddle]['nodes'])
-            # remainder are the neighbouring nodes of the outflow but are not in the puddles
-            remainder = lowerneighbours.union(higherneighbours).difference(nodeset)
-            # if remainder is empty, no exit, the puddles have to be merged
-            if not remainder:
-                listtomerge.append(outflow)
-        # create the new puddles
-        for outf in listtomerge:
-            # create a set of nodes containing the outflow and all puddle nodes
-            seed = {outf}
-            lpuddle = outflowidx[outf]
-            print(lpuddle)
-            for jpuddle in lpuddle:
-                seed = seed.union(self.puddledict[jpuddle]['nodes'])
-            # build the new puddle
-            nodes, outlet, outflow = self.floodPuddle(seed)
-            ipuddle = lpuddle.pop()
-            # store the new puddle
-            self.puddledict[ipuddle] = {'nodes': nodes,
-                                        'outlet': outlet,
-                                        'outflow': outflow}
-            # delete the old puddles
-            for jpuddle in lpuddle:
-                del self.puddledict[jpuddle]
+        # pouringstack contains the list of pouring nodes to be processed
+        while pouringstack:
+            listtomerge = []
+            while pouringstack:
+                pouringnode = pouringstack.pop()
+                # get the list of nodes connected to the pouring node by a thalweg
+                lowerneighbours, higherneighbours = self.getThalwegNeighbourNodes(pouringnode)
+                neighbours = lowerneighbours.union(higherneighbours)
+                # get the puddles of these nodes (expected that no node belongs to more than one puddle)
+                # if a node is not in a puddle, puddle is -1
+                puddles = {self.puddlenodeidx[i] for i in neighbours}
+                # remove the puddles that join the pouring node
+                remainder = puddles.difference(self.pouringidx[pouringnode])
+                # if remainder is empty, no exit, the puddles have to be merged
+                if not remainder:
+                    listtomerge.append(pouringnode)
+            # create the new puddles
+            #print("Pouring nodes:", listtomerge)
+            for pouringnode in listtomerge:
+                # create a set of nodes containing the outflow and all puddle nodes
+                seed = {pouringnode}
+                lpuddle = self.pouringidx[pouringnode]
+                print("same pouring node", lpuddle)
+                for jpuddle in lpuddle:
+                    if jpuddle not in self.puddledict:
+                        continue
+                    seed.update(self.puddledict[jpuddle]['nodes'])
+                # build the new puddle
+                ipuddle = lpuddle.pop()
+                del self.pouringidx[pouringnode]
+                nodes, outlet, outflow = self.floodPuddle(seed)
+                self.addPuddle(ipuddle, nodes, outlet, outflow)
+        # update the pouring node index
+        deletepuddle = []
+        for i in self.pouringidx:
+            ipuddle = self.pouringidx[i][0]
+            if not ipuddle in self.puddledict:
+                del self.pouringidx[i][0]
+                if not self.pouringidx[i]:
+                    deletepuddle.append(i)
+        for i in deletepuddle:
+            del self.pouringidx[i]
     
     def mergePuddleLoops(self):
         """
@@ -453,116 +451,35 @@ class StreamNetwork(ThalwegNetwork):
         None.
 
         """
-        outflowidx = {}
-        # sort puddles by outflow
-        for ipuddle, puddle in self.puddledict.items():
-            outflow = puddle['outflow']
-            if outflow in outflowidx:
-                outflowidx[outflow].append(ipuddle)
-            else:
-                outflowidx[outflow] = [ipuddle]
-    
-        pairstobemerged = set()
-        for ipuddle in self.puddledict:
-            # puddlefilter contains the outflows located in ipuddle
-            puddlefilter = filter(lambda i: i in outflowidx, self.puddledict[ipuddle]['nodes'])
-            for puddlef in puddlefilter:
-                # the outflow of ipuddle
-                ioutflow = self.puddledict[ipuddle]['outflow']
-                # list of puddles that flow in ipuddle
-                puddlelist = outflowidx[puddlef]
-                # look if ipuddle flows inside one of these puddles
-                for jpuddle in puddlelist:
-                    if ioutflow in self.puddledict[jpuddle]['nodes']:
-                        # it means that ipuddle flows in jpuddle and jpuddle flows in ipuddle
-                        tmp = (ipuddle, jpuddle)
-                        pairstobemerged.add(tmp)
-        # merge the puddles that flow into each other
-        #print(pairstobemerged)
-        tobemerged = []
-        while pairstobemerged:
-            loop = set(pairstobemerged.pop())
-            tobedeleted = []
-            for pair in pairstobemerged:
-                if not loop.isdisjoint(pair):
-                    loop.update(pair)
-                    tobedeleted.append(pair)
-            for pair in tobedeleted:    
-                pairstobemerged.discard(pair)
-            tobemerged.append(loop)
+        # A puddle sequence is a list of puddles where each puddle flows in the next
+        # A puddle loop is a circular sequence of puddles 
+        puddlestomerge = []
+        pouringdict = {ipuddle: self.puddlenodeidx[self.puddledict[ipuddle]['outflow']] for ipuddle in self.puddledict}
+        for ipuddle in pouringdict:
+            ip = pouringdict[ipuddle]
+            pouringstack = [ipuddle]
+            while ip != -1 and ip not in pouringstack:
+                pouringstack.append(ip)
+                ip = pouringdict[ip]
+            if ip in pouringstack:
+                # prendre la partie où ça se répète
+                i = pouringstack.index(ip)
+                puddlestomerge.append(pouringstack[i:])
+            for i in pouringstack:
+                pouringdict[i] = -1
             
-        print(tobemerged)
-        for lpuddle in tobemerged:
+        #print("Puddle loops", puddlestomerge)
+        for lpuddle in puddlestomerge:
             ipuddle = lpuddle.pop()
             seed = self.puddledict[ipuddle]['nodes']
             for jpuddle in lpuddle:
                 # put all the nodes of both puddles in one set
                 seed.update(self.puddledict[jpuddle]['nodes'])
-            nodes, outlet, outflow = self.floodPuddle(seed)
-            self.puddledict[ipuddle] = {'nodes': nodes,
-                                        'outlet': outlet,
-                                        'outflow': outflow}
             for jpuddle in lpuddle:
-                del self.puddledict[jpuddle]
-
-    def mergeIntersectingPuddles(self):
-        #keys = [key for key in self.puddledict]
-        keylist = [key for key in self.puddledict]
-        keys = array.array('l', keylist)
-        
-        tobemerged = []
-        n = len(keys)
-        for i in range(n-1):
-            ipuddle = keys[i]
-            nodes = self.puddledict[ipuddle]['nodes']
-            for j in range(i+1, n):
-                jpuddle = keys[j]
-                intersection = nodes.intersection(self.puddledict[jpuddle]['nodes'])
-                ninter = len(intersection)
-                if ninter > 1:
-                        tobemerged.append((ipuddle, jpuddle))
-        replace = {}
-        print(tobemerged)
-        for (i,j) in tobemerged:
-            try:
-                if i in replace:
-                    i = replace[i]
-                while j in replace:
-                    j = replace[j]
-                if i == j:
-                    continue
-                seed = self.puddledict[i]['nodes'].union(self.puddledict[j]['nodes'])
-            except KeyError as err:
-                print("mergeIntersectingPuddles KeyError", err, "keys", i, j)
-            # build the new puddle
+                pn = self.puddledict[jpuddle]['outflow']                
+                del self.pouringidx[pn]
             nodes, outlet, outflow = self.floodPuddle(seed)
-            # store the new puddle
-            self.puddledict[i] = {'nodes': nodes,
-                                  'outlet': outlet,
-                                  'outflow': outflow}
-            # delete the old puddles
-            del self.puddledict[j]
-            replace[j] = i
-            print(replace)
-        
-    # def mergeIntersectingPuddles(self):
-    #     outletidx = {self.puddledict[ip]['outlet']: ip for ip in self.puddledict}
-    #     # sort the outlets based on their elevation, starting from the lowest
-    #     outletlist = sorted(outletidx.keys(), key = lambda i: self.nodedict[i]['z'])
-        
-    #     tobedeleted = []
-    #     n = len(outletlist)
-    #     for i in range(n-1):
-    #         iout = outletlist[i]
-    #         ipuddle = outletidx[iout]
-    #         for j in range(i+1, n):
-    #             jout = outletlist[j]
-    #             jpuddle = outletidx[jout]
-    #             if iout in self.puddledict[jpuddle]['nodes']:
-    #                 if self.puddledict[ipuddle]['nodes'].issubset(self.puddledict[jpuddle]['nodes']):
-    #                     tobedeleted.append(ipuddle)
-    #     for ip in tobedeleted:
-    #         del self.puddledict[ip]
+            self.addPuddle(ipuddle, nodes, outlet, outflow)
 
     def mergePuddles(self):
         """
@@ -578,14 +495,11 @@ class StreamNetwork(ThalwegNetwork):
         number = len(self.puddledict)
         number1 = number + 1
         while (number<number1):
-            while (number < number1):
-                self.mergePuddlesSameOutlet()
-                self.mergePuddlesSameOutflow()
-                number1 = number
-                number = len(self.puddledict)
-            self.mergePuddleLoops()
-            self.mergeIntersectingPuddles()
             number1 = number
+            print("mergePuddlesSameOutflow")
+            self.mergePuddlesSameOutflow()
+            print("mergePuddleLoops")
+            self.mergePuddleLoops()
             number = len(self.puddledict)
         
     def preserveSinks(self):
@@ -745,44 +659,6 @@ class StreamNetwork(ThalwegNetwork):
         for inode in springlist:
             self.flowDownStream(inode)
 
-    # def assignStrahlerOrder(self):
-    #     """
-    #     Compute the Strahler order for all streams in the network
-    #     The order is computed starting from each spring
-
-    #     Returns
-    #     -------
-    #     None.
-
-    #     """
-    #     nodeorder = {}
-    #     spring = {}
-    #     # initialise all nodes with an order 0 and no spring
-    #     for inode in self.nodedict.items():
-    #         spring[inode] = set()
-    #         nodeorder[inode] = 0
-    
-    #     # set all thalweg orders to 0 by default 
-    #     for it, t in self.thalwegdict.items():
-    #         t['order'] = 0
-        
-    #     # take all nodes that are springs
-    #     nodestack = [key for key in self.nodedict if self.isSpring(key)]
-    #     # we need to deal with the case where saddles are at the same height
-        
-    #     while nodestack:
-    #         inode = nodestack.pop()
-    #         uplist = self.upstreamThalwegs(inode)
-    #         if uplist:
-    #             for it in uplist:
-    #                 t = self.thalwegdict[it]
-                    
-    #         else:
-    #             nodeorder[inode] = 1
-    #         tlist = self.downstreamThalwegs(inode)
-    #         for t in tlist:
-    #             t.order = nodeorder[inode]
-
     def detectLoops2(self):
         """
         Detects loops where a stream leaves a puddle and returns to this puddle
@@ -855,7 +731,7 @@ class StreamNetwork(ThalwegNetwork):
             visited[ip] = -1 # mark all nodes as unvisited
     
         # get the dict of all outlets from where DFS will start
-        # the dict is used to find back the pudlle where we are
+        # the dict is used to find back the puddle where we are
         outletidx = {self.puddledict[ip]['outlet']: ip for ip in self.puddledict}
         # sort the outlets based on their elevation, starting from the lowest
         outletlist = sorted(outletidx.keys(), key = lambda i: self.nodedict[i]['z'])
@@ -897,9 +773,7 @@ class StreamNetwork(ThalwegNetwork):
                                         newpuddle.append(jpt)
                                         node = self.nodedict[jpt]
                                     puddle, outlet, outflow = self.floodPuddle(newpuddle)
-                                    self.puddledict[ipt] = {'nodes': puddle,
-                                                             'outlet': outlet,
-                                                             'outflow': outflow}
+                                    self.addPuddle(ipt, puddle, outlet, outflow)
                                     puddleloop.append(ipt)
                         # if the node has not been visited yet, we add it in the stack as an entrance
                         elif visited[ipt] == -1:
@@ -922,15 +796,14 @@ class StreamNetwork(ThalwegNetwork):
         None.
 
         """
-        print(len(puddleloop), "boucles")
         for ipuddle in puddleloop:
+            if ipuddle not in self.puddledict:
+                continue
             seed = self.puddledict[ipuddle]['nodes']
             ioutflow = self.puddledict[ipuddle]['outflow']
             seed.add(ioutflow)
             nodes, outlet, outflow = self.floodPuddle(seed)
-            self.puddledict[ipuddle] = {'nodes': nodes,
-                                        'outlet': outlet,
-                                        'outflow': outflow}
+            self.addPuddle(ipuddle, nodes, outlet, outflow)
 
     def mergePuddlesAndAssignFlow(self):
         """
@@ -943,15 +816,20 @@ class StreamNetwork(ThalwegNetwork):
         None.
 
         """
+        print("Merge puddles")
         self.mergePuddles()
         self.assignFlowDirection()
         puddleloop = self.detectLoops()
-        while puddleloop:
-            print("Correcting loops")
+        counter = 0
+        while puddleloop and counter < 10:
             self.extendPuddles(puddleloop)
             self.mergePuddles()
+            print("Assign flow direction")
             self.assignFlowDirection()
             puddleloop = self.detectLoops()
+            print("There are", len(puddleloop), "loops remaining")
+            if len(puddleloop) == 1:
+                counter += 1
     
     def makeSingleFlow(self):
         """
