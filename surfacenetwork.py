@@ -199,7 +199,6 @@ class SurfaceNetwork(ThalwegNetwork):
                 print(err, 'in computeAscent topology exception from shapely', i,j)
                 validridge = False
                 return validridge, kmax, inlist
-            #print(ij, covers, tside)
             if covers and tside >= 0:
                 inlist.append(ldr[kk])
                 if maxassigned == False:
@@ -265,8 +264,6 @@ class SurfaceNetwork(ThalwegNetwork):
             if ldr[kright] in inlist:
                 vright = v[kright] - z
 
-#                    print(ldr)
-#                    print('vleft, vright', vleft, vright)
         if vleft == vright or max(vleft, vright) <= 0: # no lag, it goes along ldr[kmin]
             lag = 0
         else: # either to the left or the right triangle
@@ -291,8 +288,6 @@ class SurfaceNetwork(ThalwegNetwork):
             # the gradient direction is given by (a,b)
             # now we compute the lag
             # the lag is the difference between ldr[kmin] and (a,b)
-#                        print('kmax', kmax, 'k1', k1)
-#                        print('ldr[kmax]', ldr[kmax], 'ldr[k1]', ldr[k1], 'oldldr', oldldr)
             if (ldr[kmax][0] == ldr[k1][0]): # compute b for a = 1
                 b = b/a
                 a = ldr[kmax][0]
@@ -308,8 +303,6 @@ class SurfaceNetwork(ThalwegNetwork):
                 else: 
                     lag = 0
             # if we keep going the same way, correct with the lag
-#                        print('gradient', a, b)
-#                        print('oldlag', oldlag, 'lag', lag)
             if (ldr[kmax] == oldldr):
                 lag += oldlag
                 if lag > 0.5:
@@ -404,8 +397,6 @@ class SurfaceNetwork(ThalwegNetwork):
                 else:
                     pright = self.thalwegdict[-tright]['polyline'][-2]
                 # ileft and iright are the neighbour pixels where the thalwegs pass through
-                #print('tleft, tright', t, tright, ihill)
-                #print('p', ipt, orderedneighbours)
                 ileft = orderedneighbours.index(pleft)
                 iright = orderedneighbours.index(pright)
                 #print('ileft, iright', ileft, iright)
@@ -538,7 +529,7 @@ class SurfaceNetwork(ThalwegNetwork):
             # if another rige comes there, a junction should be inserted
             
             if ihill % 1000 == 0:
-                print(ihill)
+                print(ihill, end=" ")
             hill = self.hilldict[ihill]
             ridgelist = hill['ridge'][:]
             for ir in ridgelist:
@@ -776,7 +767,10 @@ class SurfaceNetwork(ThalwegNetwork):
                             junction = False
                             keepgoing = False
                             if dtoverlap > 0:
-                                ridgeindangling[(i,j)].append((ir, thalwegside))
+                                if (i,j) in ridgeindangling:
+                                    ridgeindangling[(i,j)].append((ir, thalwegside))
+                                else:
+                                    ridgeindangling[(i,j)] = [(ir, thalwegside)]
                         else:
                             floorkey[i,j] = ir
                             if dtoverlap > 0:
