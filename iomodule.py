@@ -50,7 +50,7 @@ def readRasterDTM(filename, terrain):
     terrain.nodata = nodata
     terrain.dtm = raster.ReadAsArray()
 
-# write a line Shapefile from a dict
+# write a line geopackage from a dict
 def writeGpkgLine(linedict, directory, linename, terrain):
     driver = ogr.GetDriverByName("GPKG")
     filename = directory+linename+".gpkg"
@@ -62,20 +62,20 @@ def writeGpkgLine(linedict, directory, linename, terrain):
     linelayer = linefile.CreateLayer(linename, crs, ogr.wkbLineString)
 
     linelayer.CreateField(ogr.FieldDefn("id", ogr.OFTInteger))
-    linelayer.CreateField(ogr.FieldDefn("start", ogr.OFTInteger))
-    linelayer.CreateField(ogr.FieldDefn("end", ogr.OFTInteger))
+    #linelayer.CreateField(ogr.FieldDefn("start", ogr.OFTInteger))
+    #linelayer.CreateField(ogr.FieldDefn("end", ogr.OFTInteger))
     layerdef = linelayer.GetLayerDefn()
 
     linelayer.StartTransaction()
-    for id in linedict:
-        line = linedict[id]
+    for id, line in linedict.items():
         feature = ogr.Feature(layerdef)
         feature.SetField("id", id)
-        feature.SetField("start", line['start'])
-        feature.SetField("end", line['end'])
+        #feature.SetField("start", line['start'])
+        #feature.SetField("end", line['end'])
 
         polyline = ogr.Geometry(ogr.wkbLineString)
-        for p in line['polyline']:
+        #for p in line['polyline']:
+        for p in line:
             x, y = terrain.fromIndexToCoordinates(p[0],p[1])
             polyline.AddPoint(x, y)
 
@@ -86,6 +86,68 @@ def writeGpkgLine(linedict, directory, linename, terrain):
     linelayer.CommitTransaction()
     linefile = None
     linelayer = None
+
+def writeGpkgPolygon(pointlist, terrain, directory, polygonname):
+    driver = ogr.GetDriverByName("GPKG")
+    filename = directory+polygonname+".gpkg"
+    if os.path.exists(filename):
+        driver.DeleteDataSource(filename)
+    polygonfile = driver.CreateDataSource(filename)
+    crs = osr.SpatialReference(terrain.crs)
+    
+    polygonlayer = polygonfile.CreateLayer(polygonname, crs, ogr.wkbPolygon)
+
+    #polygonlayer.CreateField(ogr.FieldDefn("thalweg", ogr.OFTInteger))
+    #polygonlayer.CreateField(ogr.FieldDefn("order", ogr.OFTInteger))
+    layerdef = polygonlayer.GetLayerDefn()
+
+    polygonlayer.StartTransaction() 
+    feature = ogr.Feature(layerdef)
+    #feature.SetField("thalweg", thalweg)
+    #feature.SetField("order", order)
+    ring = ogr.Geometry(ogr.wkbLinearRing)
+    for p in pointlist:
+        x, y = terrain.fromIndexToCoordinates(p[0],p[1])
+        ring.AddPoint(x, y)
+
+    polygon = ogr.Geometry(ogr.wkbPolygon)
+    polygon.AddGeometry(ring)        
+    feature.SetGeometry(polygon)
+    
+    polygonlayer.CreateFeature(feature)
+    feature = None
+    polygonlayer.CommitTransaction()
+    polygonfile = None
+    polygonlayer = None
+
+def writeGpkgMultiPoint(pointlist, terrain, directory, multipointname):
+    driver = ogr.GetDriverByName("GPKG")
+    filename = directory+multipointname+".gpkg"
+    if os.path.exists(filename):
+        driver.DeleteDataSource(filename)
+    multipointfile = driver.CreateDataSource(filename)
+    crs = osr.SpatialReference(terrain.crs)
+    
+    multipointlayer = multipointfile.CreateLayer(multipointname, crs, ogr.wkbMultiPoint)
+
+    layerdef = multipointlayer.GetLayerDefn()
+
+    multipointlayer.StartTransaction() 
+    feature = ogr.Feature(layerdef)
+    multipoint = ogr.Geometry(ogr.wkbMultiPoint)
+    for p in pointlist:
+        x, y = terrain.fromIndexToCoordinates(p[0],p[1])
+        pt = ogr.Geometry(ogr.wkbPoint)
+        pt.AddPoint(x,y)
+        multipoint.AddGeometry(pt)
+
+    feature.SetGeometry(multipoint)
+    
+    multipointlayer.CreateFeature(feature)
+    feature = None
+    multipointlayer.CommitTransaction()
+    multipointfile = None
+    multipointlayer = None
 
 def writeGpkgNode(nodedict, directory, nodename, terrain):
     driver = ogr.GetDriverByName("GPKG")
@@ -301,7 +363,7 @@ def writeShpSaddle(nodedict, name, terrain):
     ridgefile = None
     ridgelayer = None
 
-def writeGpkgMultiPoint(puddledict, nodedict, directory, puddlename, terrain):
+def writeGpkgPuddle(puddledict, nodedict, directory, puddlename, terrain):
     """
     Parameters
     ----------
@@ -406,7 +468,7 @@ def writeGpkgThalweg(linedict, directory, linename, terrain):
         if slopefield:
             feature.SetField("slope", line['slope'])
         directedline = list(line['polyline'])
-        if not line['flowdirection']:
+        if 'flowdirection' in line and not line['flowdirection']:
             directedline = reversed(directedline)
         polyline = ogr.Geometry(ogr.wkbLineString)
         for p in directedline:
