@@ -225,7 +225,10 @@ class ExtendedSurfaceNetwork(SurfaceNetwork, StreamNetwork):
             # slopeneighbours is the list of pixels between the thalwegs
             slopeneighbours = []
             if ileft >= iright:
-                slopeneighbours = innerneighbours[ileft:iright-1:-1]
+                if iright == 0:
+                    slopeneighbours = innerneighbours[ileft::-1]
+                else:
+                    slopeneighbours = innerneighbours[ileft:iright-1:-1]
             else:
                 slopeneighbours = innerneighbours[iright:]+innerneighbours[:ileft+1]
             # the ridge in this hill must go through one of these pixels
@@ -285,23 +288,49 @@ class ExtendedSurfaceNetwork(SurfaceNetwork, StreamNetwork):
             inboundposition = {ir: inbound.index(self.ridgedict[ir]['polyline'][1]) for ir in ridgelist}
             outlist = sorted(ridgelist, key = lambda ir: boundaryposition[ir])
             inlist = sorted(ridgelist, key = lambda ir: inboundposition[ir])
-            misplaced = [(outlist[i],inlist[i]) for i in range(len(outlist)) if outlist[i]!=inlist[i]]
-            while misplaced:
-                for position in misplaced:
-                    ir0 = position[0]
-                    ir1 = position[1]
-                    indiceout = [i for i, p in enumerate(boundary) if p == self.ridgedict[ir0]['polyline'][0]]
-                    indicein = [i for i, p in enumerate(inbound) if p == self.ridgedict[ir1]['polyline'][1]]
-                    if len(indiceout) > 1:
-                        boundaryposition[ir0] = indiceout[1]
-                    if len(indicein) > 1:
-                        inboundposition[ir1] = indicein[1]
-                outlist = sorted(ridgelist, key = lambda ir: boundaryposition[ir])
-                inlist = sorted(ridgelist, key = lambda ir: inboundposition[ir])
-                misplaced = [(outlist[i],inlist[i]) for i in range(len(outlist)) if outlist[i]!=inlist[i]]
-                print(misplaced)
-                print(outlist[21:25], inlist[21:25])
-            ridgelist = outlist
+            mismatched = [(outlist[i],inlist[i]) for i in range(len(outlist)) if outlist[i]!=inlist[i]]
+            mismatched = {(min(i),max(i)) for i in mismatched}
+            for position in mismatched:
+                ir0 = position[0]
+                ir1 = position[1]
+                indice0in = [i for i, p in enumerate(inbound) if p == self.ridgedict[ir0]['polyline'][1]]
+                indice1in = [i for i, p in enumerate(inbound) if p == self.ridgedict[ir1]['polyline'][1]]
+                okindice0in = len(indice0in) == 1
+                okindice1in = len(indice1in) == 1
+                if not okindice0in or not okindice1in:
+                    indice0out = [i for i, p in enumerate(boundary) if p == self.ridgedict[ir0]['polyline'][0]]
+                    indice1out = [i for i, p in enumerate(boundary) if p == self.ridgedict[ir1]['polyline'][0]]
+                    okindice0out = len(indice0out) == 1
+                    okindice1out = len(indice1out) == 1
+                    if okindice0out and okindice1out:
+                        tmp = inboundposition[ir0]
+                        inboundposition[ir0] = inboundposition[ir1]
+                        inboundposition[ir1] = tmp
+                    else:
+                        if okindice0in and okindice1out:
+                            i0 = outlist.index(ir0)
+                            i1 = inlist.index(ir1)
+                            if i0 == i1:
+                                tmp = inboundposition[ir0]
+                                inboundposition[ir0] = inboundposition[ir1]
+                                inboundposition[ir1] = tmp
+                            else:
+                                print('x', position)
+                        elif okindice1in and okindice0out:
+                            i0 = inlist.index(ir0)
+                            i1 = outlist.index(ir1)
+                            if i0 == i1:
+                                tmp = inboundposition[ir0]
+                                inboundposition[ir0] = inboundposition[ir1]
+                                inboundposition[ir1] = tmp
+                            else:
+                                print('+', position)
+                        else:    
+                            print(ir0, ir1, indice0in, indice1in, indice0out, indice1out)
+            inlist = sorted(ridgelist, key = lambda ir: inboundposition[ir])
+            mismatched = [(outlist[i],inlist[i]) for i in range(len(outlist)) if outlist[i]!=inlist[i]]
+            mismatched = {(min(i),max(i)) for i in mismatched}
+            ridgelist = inlist
         except:
             print('Exception orderRidges around virtual pit')
         self.nodedict[-1]['ridge'] = ridgelist
@@ -722,7 +751,7 @@ class ExtendedSurfaceNetwork(SurfaceNetwork, StreamNetwork):
             if len(ridges) > 1:
                 print("problem, two ridges at node", currentnode, iridge, ridges)
                 print(self.nodedict[currentnode]['ridge'])
-                ihill = self.ridgedict[-iridge]['hill']
+                ihill = self.ridgedict[abs(iridge)]['hill']
                 for lr in ridges:
                     if self.ridgedict[abs(lr)]['hill'] == ihill:
                         iridge = lr
