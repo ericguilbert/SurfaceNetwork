@@ -1,7 +1,7 @@
 # SurfaceNetwork
 Construction of a surface network from a raster DTM
 This code is an implementation of the algorithm presented in 
-https://josis.org/index.php/josis/article/view/681
+https://www.doi.org/10.5311/JOSIS.2021.22.681
 
 The code includes the following files:
 main.py the main file
