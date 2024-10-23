@@ -23,7 +23,8 @@ math (for some basic math operations)
 os, ogr, osr, gdal for all i/o operations
 
 # Extended Surface Network
-Construction of an extended surface network from a raster DTM
+Construction of an extended surface network from a raster DTM. The code is the implementation of the algorithm presented in
+https://doi.org/10.5311/JOSIS.2023.26.240
 
 Two files are added to build a new network that includes the surface network and the drainage network
 streamnetwork.py, a class that inherits from thalwegnetwork, that computes puddles (places where the water accumulates and the flow is interrupted) and adds a flow direction to each thalweg. The flow direction is directed towards the lowest point except in puddles where it is directed towards the outlet.
