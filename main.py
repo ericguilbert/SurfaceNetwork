@@ -1,7 +1,7 @@
 
 from terrain import Terrain
 from surfacenetwork import SurfaceNetwork
-from iomodule import writeShpNode, writeShpLine
+from iomodule import writeGpkgNode, writeGpkgRidge, writeGpkgThalweg
 
 
 directory = "the directory where the DTM is located"
@@ -13,7 +13,7 @@ terrain = Terrain(filename)
 network = SurfaceNetwork()
 network.buildFromTerrain(terrain)
 
-writeShpNode(network.nodedict, directory+'node', terrain)
-writeShpLine(network.thalwegdict, directory+'thalweg', terrain)
-writeShpLine(network.ridgedict, directory+'ridge', terrain)
+writeGpkgNode(network.nodedict, terrain, directory, 'node')
+writeGpkgThalweg(network.thalwegdict, terrain, directory, 'thalweg')
+writeGpkgRidge(network.ridgedict, terrain, directory, 'ridge')
 
