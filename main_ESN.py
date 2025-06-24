@@ -3,7 +3,6 @@ import os
 
 from terrain import Terrain
 from extendedsurfacenetwork import ExtendedSurfaceNetwork
-#from iomodule import writeShpCandidateSaddle, writeShpSaddle
 from iomodule import writeGpkgNode, writeGpkgRidge, writeGpkgThalweg, writeGpkgMultiPoint
 
 directory = "path to the DTM"
@@ -16,7 +15,7 @@ network.buildESNFromTerrain(terrain, sd = True, smooth = False)
 
 network.assignStrahlerOrder(11000)
 
-writeGpkgNode(network.nodedict, directory, 'node', terrain)
-writeGpkgRidge(network.ridgedict, directory, 'ridge', terrain)
-writeGpkgMultiPoint(network.puddledict, network.nodedict, directory, 'puddle', terrain)
-writeGpkgThalweg(network.thalwegdict, directory, 'thalweg', terrain)
+writeGpkgNode(network.nodedict, terrain, directory, 'node')
+writeGpkgRidge(network.ridgedict, terrain, directory, 'ridge')
+writeGpkgMultiPoint(network.puddledict, terrain, network.nodedict, directory, 'puddle')
+writeGpkgThalweg(network.thalwegdict, terrain, directory, 'thalweg')
