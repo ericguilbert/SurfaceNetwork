@@ -1,7 +1,7 @@
 # coding=utf-8
 # coding=utf-8
 """
-surfacenetwork.py:
+thalwegnetwork.py:
     Class defining a thalweg network.
     
     author: Eric Guilbert
@@ -1204,3 +1204,59 @@ class ThalwegNetwork:
         for i in nopeak:
             del self.hilldict[i]
             
+    def getKeySaddle(self, idhill):
+        """
+        The key saddle of a hill is the highest saddle on its boundary
+
+        Parameters
+        ----------
+        idhill : integer
+            id of the hill.
+
+        Returns
+        -------
+        idmax : integer
+            id of the key saddle.
+
+        """
+        # get all the saddles located on the hill boundary
+        thalwegs = self.hilldict[idhill]['boundary']
+        saddleset = set()
+        for it in thalwegs:
+            isaddle = self.thalwegdict[abs(it)]['start']
+            saddleset.add(isaddle)
+        # get the highest saddle
+        idmax = -1
+        zmax = self.terrain.nodata
+        for isaddle in saddleset:
+            z = self.nodedict[isaddle]['z']
+            if z > zmax:
+                idmax = isaddle
+                zmax = z
+        return idmax                
+
+    def getNeighbouringHills(self, idsaddle):
+        """
+        Return the set of hills around a saddle. As a set, hills are not ordered
+        around the node.
+
+        Parameters
+        ----------
+        idsaddle : integer
+            id of the saddle.
+
+        Returns
+        -------
+        hills : set of integers
+            Set containing the ids of hills around idsaddle.
+
+        """
+        saddle = self.nodedict[idsaddle]
+        thalwegs = saddle['thalweg']
+        hills = set()
+        for it in thalwegs:
+            it = abs(it)
+            t = self.thalwegdict[it]
+            hills.add(t['lefthill'])
+            hills.add(t['righthill'])
+        return hills

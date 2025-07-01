@@ -349,7 +349,7 @@ def writeShpCandidateSaddle(saddledict, name, terrain):
     ridgefile = None
     ridgelayer = None
 
-def writeGpkgPuddle(puddledict, nodedict, terrain, directory, puddlename):
+def writeGpkgPuddle(puddledict, terrain, nodedict, directory, puddlename):
     """
     Parameters
     ----------

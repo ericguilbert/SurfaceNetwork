@@ -6,7 +6,7 @@ terrain.py:
 	
 	author: Eric Guilbert
 """
-#from math import *
+import math
 #from pylab import *
 
 #from qgis.core import *
@@ -98,6 +98,7 @@ class Terrain:
         # initialises other attributes
         self.diag = np.zeros((self.m - 1, self.n - 1), dtype=np.ndarray)
         self.neighbour = np.zeros((self.m, self.n), dtype=np.ndarray)
+        self.minz = np.min(self.dtm)
         self.maxz = np.max(self.dtm)
 
     def getHeight(self, ij):
@@ -460,6 +461,73 @@ class Terrain:
             b = ((i, j) == (istart, jstart))
         return inbound
 
+    def pathHeight(self, p, q):
+        """
+        compute the elevation difference along a straight path defined by two points
+
+        Parameters
+        ----------
+        p : pair of integer
+            Pixel coordinates of the starting point of the path.
+        q : pair of integer
+            Pixel coordinates of the end point of the path.
+
+        Returns
+        -------
+        float
+            difference between the highest and lowest elevation along the path.
+
+        """
+        dx = q[0]-p[0]
+        dy = q[1]-p[1]
+        length = math.hypot(dx, dy)
+        dx = dx/length
+        dy = dy/length
+        walk = 0
+        (x, y) = p
+        height = []
+        while walk <= length:
+            z = self.dtm[int(x),int(y)]
+            height.append(z)
+            x += dx
+            y += dy
+            walk += 1
+        return max(height) - min(height)        
+        
+    def pathHeight2(self, p, q):
+        """
+        compute the elevation difference along a straight path defined by two points
+
+        Parameters
+        ----------
+        p : pair of integer
+            Pixel coordinates of the starting point of the path.
+        q : pair of integer
+            Pixel coordinates of the end point of the path.
+
+        Returns
+        -------
+        float
+            difference between the highest and lowest elevation along the path.
+
+        """
+        dx = q[0]-p[0]
+        dy = q[1]-p[1]
+        length = math.hypot(dx, dy)
+        dx = dx/length
+        dy = dy/length
+        walk = 0
+        minheight = min(self.dtm[int(p[0]), int(p[1])], self.dtm[int(q[0]), int(q[1])])
+        (x, y) = p
+        height = []
+        while walk <= length:
+            z = self.dtm[int(x),int(y)]
+            height.append(z)
+            x += dx
+            y += dy
+            walk += 1
+        return max(height) - minheight
+
     def flowDiagonalisation(self):
         """
         Define a diagonal in each cell that connects to the lowest point of the cell.
@@ -574,7 +642,6 @@ class Terrain:
         # diag = -1*ones((m-1,n-1)) # sw-ne orientation
 
         # set the diagonals around passes according to ridges and thalwegs
-        tmp = 0
         for ipss, pss in passdict.items():
             linelist = pss['line']
             for l in linelist:

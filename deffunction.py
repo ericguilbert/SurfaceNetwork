@@ -8,8 +8,11 @@ deffunction.py:
 """
 
 import math
+import bisect
 
 from collections import deque
+from shapely.geometry import LineString
+from shapely.geometry import Point
 
 # pixel codes
 TOBEPROCESSED = 999
@@ -39,6 +42,14 @@ epsilon = 1.e-02
 
 # length diagonal/gradient point
 distancefactor = 2/3
+
+# vertical precision
+precision = 4
+
+# min and max dz for closest ridge search
+mindz = -20
+maxdz = 80
+maxpathheight = 25
 
 def gradLength(z, v, ldr):
     """
@@ -71,7 +82,6 @@ def gradLength(z, v, ldr):
         if dr[0] == 0 or dr[1] == 0:
             dz.append(p - z) # the norm is simply the height difference
         else:
-            #dz.append((p - z) * 2 / 3) # 2/3 of the height difference
             dz.append((p - z) * distancefactor) # 2/3 of the height difference
     return dz
 
@@ -182,13 +192,9 @@ def anglex(vctr):
     """
     if vctr == (0, 0):
         return 0
-    lenvector = math.hypot(vctr[0], vctr[1])
-    nvctr = (vctr[0] / lenvector, vctr[1] / lenvector)
-    angl = math.atan2(nvctr[1], nvctr[0])  # angle is in ]-pi, pi]
-    return angl
+    return math.atan2(vctr[1], vctr[0]) # angle is in ]-pi, pi]
 
 
-# function returning the anglex of the segment of a polyline starting at orgn
 def polylineangle(polyline, orgn):
     """
     Returns the angle of the first segment of a polyline with the i-axis.
@@ -214,7 +220,6 @@ def polylineangle(polyline, orgn):
     secondpt = polyline[-2]
     return anglex((secondpt[0] - orgn[0], secondpt[1] - orgn[1]))
 
-
 def getBoundaryIndex(polyline, boundary, inbound):
     """
     The function returns the position of the last two points inside the terrain boundaries:
@@ -238,7 +243,11 @@ def getBoundaryIndex(polyline, boundary, inbound):
 
     """
     try:
-        return boundary.index(polyline[-1]), inbound.index(polyline[-2])
+        inboundindex = inbound.index(polyline[-2])
+        outboundindex = boundary.index(polyline[-1])
+        if inboundindex == 0 and outboundindex == len(boundary)-1:
+            outboundindex = -1
+        return inboundindex, outboundindex
     except Exception as e:
         print('getBoundaryIndex', polyline[-2:])
         print('Exception message: {!s}'.format(e))
@@ -548,3 +557,69 @@ def sideOfWedge(wedge, pt):
     if v2u > 0:
         return -1
     return 0
+
+def arrangeLine(polyline, linelist):
+    tmp = polyline[1:-1]
+    tmp = sorted(tmp, key = lambda p: abs(p[0]-polyline[0][0])+abs(p[1]-polyline[0][1]))
+    polyline[1:-1] = tmp
+    linestringlist = []
+    for il in linelist:
+        if len(il) > 1:
+            x = LineString(il)
+            linestringlist.append(x)
+        else:
+            linestringlist.append(None)
+    conflict = True
+    counter = 0
+    while conflict:
+        conflict = False
+        for i in range(len(polyline)-1):
+            segment = LineString((polyline[i], polyline[i+1]))
+            xmin = segment.length
+            lmin = -1
+            for il, line in enumerate(linestringlist):
+                if not line:
+                    continue
+                if polyline[i] == linelist[il][-1] or polyline[i+1] == linelist[il][-1]:
+                    continue
+                if line.intersects(segment):
+                    pt = line.intersection(segment)
+                    p0 = Point(segment.coords[0])
+                    x = p0.distance(pt)
+                    if x < xmin:
+                        xmin = x
+                        lmin = il
+                        conflict = True
+            if conflict:
+                pt = linelist[lmin][-1]
+                ipt = polyline.index(pt)
+                print("conflit", i, ipt, pt)
+                if ipt < i:
+                    tmp = polyline[i]
+                    polyline[i] = polyline[ipt]
+                    polyline[ipt] = tmp
+                elif ipt > i+1:
+                    tmp = polyline[i+1]
+                    polyline[i+1] = polyline[ipt]
+                    polyline[ipt] = tmp
+                break
+        counter += 1
+        if counter == 3:
+            break
+    return polyline
+            
+def removeSpurs(polyline):
+    n = len(polyline) - 1
+    while n > 0:
+        m = max(0, n - 20)
+        i = n - 1
+        p = polyline[n]
+        while i > m:
+            if polyline[i] == p:
+                break
+            i -= 1
+        if i > m:
+            del polyline[i:n]
+            n = i
+        else:
+            n -= 1
