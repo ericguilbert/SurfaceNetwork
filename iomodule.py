@@ -42,7 +42,7 @@ def readRasterDTM(filename, terrain):
         maxvalue = band.GetMaximum()
         nodata = band.GetNoDataValue()
     print("in readRasterDTM", nodata, minvalue)
-    if not nodata or nodata > minvalue:
+    if not nodata or np.isnan(nodata) or nodata > minvalue:
         nodata = minvalue - 1
     else:
         if minvalue < nodata:
@@ -690,3 +690,4 @@ def loadNetwork(directory, name, terrain = None):
         network = pickle.load(networkfile)
         network.terrain = terrain
         return network        
+
