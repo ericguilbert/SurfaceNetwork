@@ -6,7 +6,7 @@ iomodule.py:
     author: Eric Guilbert
 """
 import os
-import numpy
+import numpy as np
 import pickle
 import shapely
 import json
@@ -690,4 +690,5 @@ def loadNetwork(directory, name, terrain = None):
         network = pickle.load(networkfile)
         network.terrain = terrain
         return network        
+
 
