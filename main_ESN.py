@@ -8,9 +8,6 @@ from iomodule import writeGpkgNode, writeGpkgRidge, writeGpkgThalweg, writeGpkgP
 directory = "the directory where the DTM is located"
 filename = directory + 'name of the DTM file'
 
-directory = "/home/eric/Terrain/Berev_brule/"
-filename = directory + "MNT_BEREV_BRULE.tif"
-
 terrain = Terrain(filename)
 
 network = ExtendedSurfaceNetwork()
