@@ -17,8 +17,7 @@ from topohydronetwork import TopoHydroNetwork, readBDculverts
 start = perf_counter_ns()
 
 
-#directory = "Z:/Data/"
-directory = "/home/eric/Terrain/Data/"
+directory = "./Data/"
 filename = directory + 'MNT_BEREV_p.tif'
 print("Loading the DTM")
 terrain = Terrain(filename)
@@ -40,3 +39,4 @@ end = perf_counter_ns()
 elapsed_time = (end - start)/1_000_000_000
 
 print(f"Algorithm execution time: {elapsed_time:.5f} secondes")
+
