@@ -7,14 +7,11 @@ surfacenetwork.py:
     author: Eric Guilbert
 """
 
-#import time
-
 from time import perf_counter_ns
 from math import sqrt
 from functools import reduce
 
 import shapely.geometry
-
 import deffunction as df
 from thalwegnetwork import ThalwegNetwork
 
@@ -85,7 +82,7 @@ class SurfaceNetwork(ThalwegNetwork):
         length: length of the ridge.
 
         """
-        r = self.ridge[ir]
+        r = self.ridgedict[ir]
         return df.length(r['polyline'])
 
     def addNewRidge(self, ridgekey, ihill, istart, polylist):
@@ -253,6 +250,7 @@ class SurfaceNetwork(ThalwegNetwork):
         lag = 0
         vleft = 0
         vright = 0
+        v1 = 0 # temp variable
         kleft = kmax - 1
         kright = kmax + 1
         if kright == len(ldr):
@@ -1445,8 +1443,7 @@ class SurfaceNetwork(ThalwegNetwork):
                     t['dale'] = r['rightdale']
                 else:
                     t['dale'] = r['leftdale']
-                    
-    
+
         # this is a check to see if any mistake or missing dale    
         danglingunknown = []
         danglingknown = []
@@ -1460,79 +1457,46 @@ class SurfaceNetwork(ThalwegNetwork):
                     danglingknown.append(it)
         print(danglingunknown)
 
-    def removeSpuriousRidges(self):
-        toberemoved = set()
-        for inode, node in self.nodedict.items():
-            ridgelist = node['ridge']
-            for i in range(len(ridgelist)):
-                if ridgelist[i]*ridgelist[i-1] < 0:
-                    ir1 = abs(ridgelist[i])
-                    ir2 = abs(ridgelist[i-1])
-                    r1 = self.ridgedict[ir1]
-                    r2 = self.ridgedict[ir2]
-                    if r1['start'] == r2['end'] and r1['end'] == r2['start'] and r1['hill'] == r2['hill']:
-                        #print('node', inode, 'ridges', ir1, ir2)
-                        toberemoved.add(max(ir1, ir2))
-        print("Spurious ridges", toberemoved, "are removed")
-        for ir in toberemoved:
-            r = self.ridgedict[ir]
-            ihill = r['hill']
-            istart = r['start']
-            iend = r['end']
-            self.nodedict[istart]['ridge'].remove(ir)
-            self.nodedict[iend]['ridge'].remove(-ir)
-            self.hilldict[ihill]['ridge'].remove(ir)
-            del self.ridgedict[ir]
-            
-def checkCells(self):
-    for idale in self.daledict:
-        self.daledict[idale]['pit'] = None
-    
-    # for each pit, assign the pit to the dale
-    for ipit in self.nodedict:
-        pit = self.nodedict[ipit]
-        if pit['type'] != df.PIT:
-            continue
-        tlist = pit['thalweg']
-        if not tlist:
-            print("pit ", ipit, "is isolated")
-        it = -tlist[0]
-        idale = self.thalwegdict[it]['dale']
-        for i in tlist:
-            if self.thalwegdict[-i]['dale'] != idale:
-                print("pit ", ipit, "problem with dale")
-        if self.daledict[idale]['pit']:
-            print("dale", idale, "already pit ", ipit, self.daledict[idale]['pit'])
-        self.daledict[idale]['pit'] = ipit
-    
-    nopit = []
-    for idale in self.daledict:
-        if not self.daledict[idale]['pit']:
-            nopit.append(idale)
+    def getHill(self, idpeak):
+        """
+        Returns the hill id that contains the peak idpeak
 
-    for ihill in self.hilldict:
-        self.hilldict[ihill]['peak'] = None
+        Parameters
+        ----------
+        idpeak : integer
+            id of the peak.
+
+        Returns
+        -------
+        integer
+            id of the hill defined in the hilldict.
+
+        """
+        ridges = self.nodedict[idpeak]['ridge']
+        ridge = -ridges[0]
+        return self.ridgedict[ridge]['hill']
     
-    # for each pit, assign the pit to the dale
-    for ipeak in self.nodedict:
-        peak = self.nodedict[ipeak]
-        if peak['type'] != df.PEAK:
-            continue
-        tlist = peak['ridge']
-        if not tlist:
-            print("peak ", ipeak, "is isolated")
-        it = -tlist[0]
-        ihill = self.ridgedict[it]['hill']
-        for i in tlist:
-            if self.ridgedict[-i]['hill'] != ihill:
-                print("peak ", ipeak, "problem with hill")
-        if self.hilldict[ihill]['peak']:
-            print("hill", ihill, "already peak ", ipeak)
-        self.hilldict[ihill]['peak'] = ipeak
-    
-    nopeak = []
-    for ihill in self.hilldict:
-        if not self.hilldict[ihill]['peak']:
-            nopeak.append(ihill)
-    
-    return nopit, nopeak
+    def getPeak(self, idhill):
+        """
+        Returns the peak contained in a hill
+
+        Parameters
+        ----------
+        idhill : integer
+            id of the hill.
+
+        Returns
+        -------
+        ipt : integer
+            id of the peak contained by the hill.
+
+        """
+        ridges = self.hilldict[idhill]['ridge']
+        for ir in ridges:
+            r = self.ridgedict[ir]
+            ipt = r['end']
+            if self.nodedict[ipt]['type'] == df.PEAK:
+                return ipt
+        print("Error no peak in hill")
+        return None
+

@@ -4,24 +4,17 @@ terrain.py:
 	Class storing a DTM from a raster grid, used for the computation of a surface network
 	It includes an array storing the triangulation of the DTM
 	
-	author: Eric Guilbert
+	author: Eric Guilbert, Yassmine Zada
 """
 import math
-#from pylab import *
-
-#from qgis.core import *
-#from PyQt5.QtCore import *
 
 from time import perf_counter_ns
-from multiprocessing import Pool, RawArray, Array
 from collections import deque
 import numpy as np
 
 from iomodule import readRasterDTM
 import deffunction as df
 
-
-var_dict = {}
 
 class Terrain:
     # class describing a terrain defined by:
@@ -64,12 +57,15 @@ class Terrain:
         # fill the pixelclass array
         # at the beginning all points are either slope or notin class
         self.pixelclass = np.ones((self.m, self.n), dtype=int)
+        self.pixelclass2 = np.ones((self.m, self.n), dtype=int)
         for i in range(self.m):
             for j in range(self.n):
                 if self.dtm[i, j] > self.nodata:
                     self.pixelclass[i, j] = df.SLOPE
+                    self.pixelclass2[i, j] = df.SLOPE
                 else:
                     self.pixelclass[i, j] = df.NOTIN # outside the terrain
+                    self.pixelclass2[i, j] = df.NOTIN # outside the terrain
                     outside = True
 
         global nodata 
@@ -101,7 +97,7 @@ class Terrain:
         self.minz = np.min(self.dtm)
         self.maxz = np.max(self.dtm)
 
-    def getHeight(self, ij):
+    def getHeight(self, i, j):
         """
         Return the height of the pixel (i,j). No domain check is done
 
@@ -116,7 +112,7 @@ class Terrain:
             height of the pixel.
 
         """
-        return self.dtm[ij]
+        return self.dtm[(i,j)]
 
     def fromIndexToCoordinates(self, i, j):
         """
@@ -969,203 +965,263 @@ class Terrain:
                         count_n += 1
                         count_p += (Nc / 2 - 1)
         return saddledict, saddleidx    # computation of saddles directly from the raster
-    
-    def computeSaddlesMP(self):
+
+    def pixelCulverts(self, lignes_ponceaux) :
         """
-        Detection of all saddles on the raster. Comparison is done on all eight neighbours.
-        The objective is to detect as many saddles as possible, they will be sorted after.
-        In the pixelclass, all saddles are marked TOBEPROCESSED for that.
+        Pixelates the list of original culverts
+
+        Parameters
+        ----------
+        lignes_ponceaux :
+            list of culvert lines
 
         Returns
         -------
-        saddledict : dictionary
-            Contains all the saddles with their critical lines.
-        saddleidx : dictionary
-            Hash table storing saddle coordinates for indexing.
+        ponceaux_avec_z :
+            list of pixelated culverts with height z
+        ponceaux_avec_z_prolonges : 
+            list of extended culverts pixelated with height z
 
         """
-        # matrix dimensions
-        m = self.m
-        n = self.n
-        # create a raw array X for the dtm
-        start = perf_counter_ns()
-        A = RawArray('f', m * n)
-        # and wrap it in a m*n array
-        Amn = np.frombuffer(A, 'f').reshape((m, n))
-        np.copyto(Amn, self.dtm)
         
-        P = RawArray('i', m * n)
-        Pmn = np.frombuffer(P, dtype = np.int).reshape((m,n))
-        np.copyto(Pmn, self.pixelclass)
-        end = perf_counter_ns()
-        print("Array time:", end - start)
+        # list of rasterized culverts
+        ponceaux_pixels = []
+         
+        # Construction of a list of culverts with their (i, j) indices
+        for linestring in lignes_ponceaux :
+            # extracting coordinates from the list of culverts linestring
+            coords = list(linestring.coords)
+            indices = []
+            for point in coords :
+                x, y = point[0], point[1]
+                # conversion of the coordinates of the two points that make up each culvert into pixel indices
+                indices.append(self.fromCoordinatesToIndex(x, y))
+            ponceaux_pixels.append(indices)
+        # Construction of a dictionary of culverts using pixel indices
+        identifiant = 1
+        keys = []
+        for pixel in ponceaux_pixels:
+            keys.append(identifiant)
+            identifiant += 1
+        # construction of a dictionary of culverts
+        pairs = zip(keys, ponceaux_pixels)   
+        ponceauxdict = dict(pairs)
         
-#        saddledict, saddleidx = computeBlockSaddles(A, P, m, n)
-        with Pool(initializer = init_worker, initargs=(A, P, (m,n))) as pool:
-            result = pool.map(computeBlockSaddles, range(1))
-        # result est une liste de saddledict qu’il faut concaténer
-        saddledict = result[0]
-        # we now build saddleidx and update pixelclass
-        saddleidx = {}
-        for skey in saddledict:
-            s = saddledict[skey]
-            saddleidx[s['ij']] = skey
-            self.pixelclass[s['ij']] = df.TOBEPROCESSED
-        return saddledict, saddleidx
+        # Construction of a list of culverts using the Bresenham method to build pixels
+        #along the culverts
+        ponceaux_list_det = []  ##List of pixels crossed by culverts
+        keys2 = []
+        for key, pixel in ponceauxdict.items() :
+            keys2.append(key)
+            coords = pixel
+            ponceaux = bresenham(coords)
+            ponceaux_list = list(ponceaux)
+            ponceaux_list_det.append(ponceaux_list)
+            
+        # Construction of a list of culverts extended by 5m
+        longueur_prolongement = 5
+        ponceau_prolongess = [] 
+        for ponceau in ponceaux_list_det :
+            ponceau_list = []
+            ponceau_list.append((ponceau[0][0], ponceau[0][1]))
+            ponceau_list.append((ponceau[-1][0], ponceau[-1][1]))
+            n = prolonger(ponceau_list)
+            bout_prolonge1 = n[0]
+            bout_prolonge2 = n[1]
+            bouts1 = bresenham(bout_prolonge1)
+            bouts2 = bresenham(bout_prolonge2)
+            bout_det1 = list(bouts1)
+            bout_det2 = list(bouts2)
+            ponceau_detaa = bout_det2 + ponceau + bout_det1
+            ponceau_prolongess.append(ponceau_detaa)
+            
+        ## Extraction of pixels through which a culvert passes with the z values of the DTM
+        ponceaux_avec_z_ = []
     
-#        return computeBlockSaddles(self.dtm, self.pixelclass, m, n, self)
+        for ponceau in ponceaux_list_det :
+            ponceau_z = []
+            for i,j in ponceau :
+                z = self.getHeight(i,j)
+                ponceau_z.append((i, j, z))
+            ponceaux_avec_z_.append(ponceau_z)
+            
+        ponceaux_avec_z_prolonges_ = []
+    
+        for ponceau in ponceau_prolongess :
+            ponceau_z = []
+            for i,j in ponceau :
+                z = self.getHeight(i,j)
+                ponceau_z.append((i, j, z))
+            ponceaux_avec_z_prolonges_.append(ponceau_z)
+          
+        # Remove duplicates, search for: where does it come from?
+        ponceaux_avec_z = []
+        for data in ponceaux_avec_z_ :
+            ## remove duplicates
+            ponceau = []
+            for i in data :
+                if i not in ponceau :
+                    ponceau.append(i)
+            ponceaux_avec_z.append(ponceau)
+            
+        ponceaux_avec_z_prolonges = []
+        for data in ponceaux_avec_z_prolonges_ :
+            ## remove duplicates
+            ponceau = []
+            for i in data :
+                if i not in ponceau :
+                    ponceau.append(i)
+            ponceaux_avec_z_prolonges.append(ponceau)
+        
+        return ponceaux_avec_z, ponceaux_avec_z_prolonges
+    
+    def extendCulvert(self, ponceau, longueur_prolongement):
+        
+        # Construction of a list of culverts extended by 5m
+        bout_prolonge1 = []
+        bout_prolonge2 = []
 
-def init_worker(A, P, shape):
-    # A, P and shape are stored as elements of var_dict
-    # A and P are two arrays, shape is a pair with their dimension
-    var_dict['A'] = A
-    var_dict['P'] = P
-    var_dict['shape'] = shape
-      
-def getAllNeighbourHeights(i, j, Amn, m, n, ldr):
+        x1, y1 = ponceau[0][0], ponceau[0][1]
+        x2, y2 = ponceau[-1][0], ponceau[-1][1]
+        # Calculate the angle and distance between points
+        angle = math.atan2(y2 - y1, x2 - x1)
+        # distance = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+        # Calculate the new coordinates of the next point
+        nouveau_x1 = round(x2 + longueur_prolongement * math.cos(angle))
+        nouveau_y1 = round(y2 + longueur_prolongement * math.sin(angle))
+        # Calculate the new coordinates of the previous point
+        nouveau_x2 = round(x1 - longueur_prolongement * math.cos(angle))
+        nouveau_y2 = round(y1 - longueur_prolongement * math.sin(angle))
+        bout_prolonge1.append((x2, y2))
+        bout_prolonge1.append((nouveau_x1, nouveau_y1))
+        bout_prolonge2.append((nouveau_x2, nouveau_y2))
+        bout_prolonge2.append((x1, y1))
+        bouts1 = bresenham(bout_prolonge1)
+        bouts2 = bresenham(bout_prolonge2)
+        bout_det1 = list(bouts1)
+        bout_det2 = list(bouts2)
+        ponceau_prolong = bout_det2 + ponceau + bout_det1
+        ponceau_prolong_z = []
+        for i,j in ponceau :
+            z = self.getHeight(i,j)
+            ponceau_prolong_z.append((i, j, z))
+        
+        return ponceau_prolong, ponceau_prolong_z
+    
+def bresenham(coords):  
     """
-    Returns the height of all the neighbours of a pixel. Neighbouring pixels
-    are indicated by ldr. By default all eight neighbours are returned.
+    Crosses along the culverts and returns the pixel indixes
 
     Parameters
     ----------
-    i : integer
-        DESCRIPTION.
-    j : integer
-        DESCRIPTION.
-    ldr : list of pairs of integer, optional
-        Contains the vectors to each neighbour. The default is df.ldr8.
+    coords : 
+        coordinates of culvert lines
 
     Returns
     -------
-    v : list of floats
-        Heights of neighbouring points.
+    None.
 
     """
-    # ldr = ((-1,-1), (-1,0), (-1,1), (0,1), (1,1), (1,0), (1,-1), (0,-1))
-    l = len(ldr)
-    v = [0] * l
-    for k in range(l):
-        dr = ldr[k]
-        ik = i + dr[0]
-        jk = j + dr[1]
-        if (ik >= 0) and (ik < m) and (jk >= 0) and (jk < n):
-            #            if ((ik>=0) and (ik<self.m) and (jk>=0) and (jk<self.n)):
-            v[k] = Amn[ik, jk]
-        else:
-            v[k] = nodata
-    return v
-
-#def computeBlockSaddles(A, P, m, n):
-def computeBlockSaddles(i):
     
-    print('in computeBlockSaddles', i)
-    A = var_dict['A']
-    P = var_dict['P']
-    (m,n) = var_dict['shape']
-    # these are counters for counting saddle points
-    count_n = 0  # number of saddles (without multiplicity)
+    x0, x1 = coords[0][0], coords[1][0]
+    y0, y1 = coords[0][1], coords[1][1]
+    dx, dy = abs(x1 - x0), abs(y1 - y0)
+    sx, sy = 1 if x0 < x1 else -1, 1 if y0 < y1 else -1
+    err = dx - dy 
+    while True : 
+        yield (x0,y0)
+        if x0 == x1 and y0 == y1 :
+            break
+        e2 = 2 * err
+        if e2 > -dy :
+            err -= dy
+            x0 += sx
+        if e2 < dx :
+            err += dx
+            y0 += sy
+        if e2 < -dy :
+            yield(x0, y0 - sy)
+        if e2 > dx :
+            yield(x0 - sx, y0)
+            
+def prolonger(points):    
+    """
+    Extends the list of culverts
 
-    Amn = np.frombuffer(A, 'f').reshape((m, n))
-    Pmn = np.frombuffer(P, dtype = np.int).reshape((m,n))
+    Parameters
+    ----------
+    points : 
+        list of culverts
+        
+    Returns
+    -------
+    bout_prolonge1 :
+        the extended end of the 1st side
+    bout_prolonge2 :
+        the extended end of the 2nd side
 
-    saddledict = {}  # dictionary of saddles
+    """
+    
+    bout_prolonge1 = []
+    bout_prolonge2 = []
 
-    # 8 directions around a pixel, goes clockwise
-    ldr = ((-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1))
-    nv = len(ldr)
+    for i in range(len(points) - 1):
+        x1, y1 = points[i]
+        x2, y2 = points[i + 1]
+        # Calculate the angle and distance between points
+        angle = math.atan2(y2 - y1, x2 - x1)
+        # distance = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
+        # Calculate the new coordinates of the next point
+        nouveau_x1 = round(x2 + 5 * math.cos(angle))
+        nouveau_y1 = round(y2 + 5 * math.sin(angle))
+        # Calculate the new coordinates of the previous point
+        nouveau_x2 = round(x1 - 5 * math.cos(angle))
+        nouveau_y2 = round(y1 - 5 * math.sin(angle))
+        bout_prolonge1.append((x2, y2))
+        bout_prolonge1.append((nouveau_x1, nouveau_y1))
+        bout_prolonge2.append((nouveau_x2, nouveau_y2))
+        bout_prolonge2.append((x1, y1))
+        
+    return bout_prolonge1, bout_prolonge2 
 
-    start = perf_counter_ns()
-    # here starts the computation of saddle points
-    # we go through each point and check its elevation against its neighbours
-    for i in range(m):
-        for j in range(n):
-            if Pmn[i, j] > df.OUT:
-                z = Amn[i, j]
-                v = getAllNeighbourHeights(i, j, Amn, m, n, ldr)
-                signe = [0] * nv  # sign of elevation difference with centre
-                Nc = 0
+        
+def profilElevation(ponceaux) :
+    """
+    Displays elevation profiles
 
-                # compute the points above and below
-                for k in range(nv):
-                    dr = ldr[k]
-                    if (v[k] - z > 0):
-                        signe[k] = 1
+    Parameters
+    ----------
+    ponceaux :
+        list of culverts
 
-                    elif (v[k] - z < 0):
-                        signe[k] = -1
+    Returns
+    -------
+    None
 
-                    else:
-                        # to be processed separately: flat areas?
-                        if (dr[0] > 0):  # di > 0
-                            signe[k] = 1
-                        elif (dr[0] < 0):
-                            signe[k] = -1
-                        elif (dr[1] > 0):
-                            signe[k] = 1
-                        else:
-                            signe[k] = -1
-                # compute how many times we go above and below
-                for k in range(nv):
-                    if (signe[k] != signe[k - 1]):
-                        Nc += 1
+    """
+    
+    l = 1
+    for ponceau in ponceaux :
+        i_values = [entry[0] for entry in ponceau]
+        j_values = [entry[1] for entry in ponceau]
+        z_values = [entry[2] for entry in ponceau]
+        
+        i_initial = i_values[0]
+        j_initial = j_values[0]
+        
+        distance = []
+        
+        for i, j in zip(i_values, j_values):
+            dist =+ df.calculate_distance(i, j, i_initial, j_initial)
+            distance.append(dist)
+            
+        plt.figure(figsize=(8, 8))
+        plt.plot(distance , z_values, marker='o', label='Pixels du ponceau')
+        plt.xlabel('Distance along the culvert')
+        plt.ylabel('Elevation Z')
+        plt.title(f"Elevation profile along the culvert {l}")
+        l = l+1
+        plt.grid(True)
+        plt.legend()
+        plt.show()
 
-                if Nc >= 4:  # classified as a saddle
-                    dz = df.gradLength(z, v, ldr)
-                    # compute the points above and below
-                    indx = list(range(nv))
-                    # if two consecutive neighbours have the same sign, we keep the one with the steepest slope
-                    k = nv - 1
-                    while k >= 0:
-                        if (signe[k] == signe[k - 1]):
-                            tmp = signe[k] * (dz[k] - dz[k - 1])
-                            if tmp == 0:
-                                # we fix the sign according to the lexicographical order
-                                ik = indx[k]
-                                ik1 = indx[k - 1]
-                                drk = ldr[ik]
-                                drk1 = ldr[ik1]
-                                tmp = -signe[k] * df.lexicoSign(drk1[0] - drk[0], drk1[1] - drk[1])
-                            if (tmp > 0):
-                                del signe[k - 1]
-                                del dz[k - 1]
-                                del indx[k - 1]
-                            elif (tmp < 0):
-                                del signe[k]
-                                del dz[k]
-                                del indx[k]
-                            if k == len(signe):
-                                k -= 1
-                        else:
-                            k -= 1
-                    criticalline = [[(i, j), (i + di, j + dj), 0, 0] for (di, dj) in [ldr[k] for k in indx]]
-                    k = 0
-                    for l in criticalline:
-                        l[3] = v[indx[k]]
-                        k += 1
-                    firstline = criticalline[0]
-                    if firstline[3] > z:  # first line is a ridge
-                        s = 1
-                    elif firstline[3] < z:
-                        s = -1
-                    else:
-                        s = df.lexicoSign(firstline[1][0] - firstline[0][0], firstline[1][1] - firstline[0][1])
-                    for l in criticalline:
-                        l[2] = s
-                        s = -1 * s
-                    saddledict[count_n] = {
-                        'ij': (i, j),
-                        'z': Amn[i, j],
-                        'line': criticalline,
-                        'thalweg': [],
-                        'ridge': [],
-                        'type': df.SADDLE
-                    }
-                    count_n += 1
-    end = perf_counter_ns()
-    print("Block time:", end - start)
-
-    return saddledict
-
-def testing(q, i):
-    q.put(i)

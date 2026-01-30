@@ -4,7 +4,7 @@ deffunction.py:
     Several functions used to compute different characteristics from the terrain
     or the surface network
     
-    author: Eric Guilbert
+    author: Eric Guilbert, Yassmine Zada
 """
 
 import math
@@ -26,6 +26,7 @@ RIDGE = 1
 RIDWEG = -5  # overlapping ridge and thalweg, not used
 JUNCTION = 2
 PEAK = 3
+BIFURCATION = 4     # nodes connected to a culvert
 SPRING = 5 # duplicated node for single flow
 SLOPE = 99
 
@@ -219,6 +220,35 @@ def polylineangle(polyline, orgn):
         return anglex((secondpt[0] - orgn[0], secondpt[1] - orgn[1]))
     secondpt = polyline[-2]
     return anglex((secondpt[0] - orgn[0], secondpt[1] - orgn[1]))
+
+def angles(basevector, vectors):
+    n = len(vectors)
+    lenbase = math.hypot(basevector[0], basevector[1])
+    lenvectors = [math.hypot(v[0], v[1]) for v in vectors]
+    base = (basevector[0]/lenbase, basevector[1]/lenbase)
+    vector = [(vectors[i][0]/lenvectors[i], vectors[i][1]/lenvectors[i]) for i in range(n)]
+    scalar = [v[0]*base[0]+v[1]*base[1] for v in vector]
+    cross = [v[1]*base[0]-v[0]*base[1] for v in vector]
+    try:
+        for i in range(n): # sin value can be out of range because of float computation error
+            if scalar[i] < -1:
+                scalar[i] = -1
+            elif scalar[i] > 1:
+                scalar[i] = 1
+            if cross[i] < -1:
+                cross[i] = -1
+            elif cross[i] > 1:
+                cross[i] = 1
+        acos = [math.acos(s) for s in scalar]
+        asin = [math.asin(s) for s in cross]
+    except Exception as e:
+        print(cross)
+        print('Exception message: {!s}'.format(e))
+    angle = acos[:]
+    for i in range(n):
+        if asin[i] < 0:
+            angle[i] = 2*math.pi-acos[i]
+    return angle
 
 def getBoundaryIndex(polyline, boundary, inbound):
     """
@@ -623,3 +653,72 @@ def removeSpurs(polyline):
             n = i
         else:
             n -= 1
+
+def calculate_distance(i, j, i_initial, j_initial):
+    """
+    This function calculates the distance between two points
+
+    Parameters
+    ----------
+    i_initial : integer
+        row index of first point.
+    j_initial : integer
+        column index of first point.
+    i : integer
+        row index of second point.
+    j : integer
+        column index of second point.
+
+    Returns
+    -------
+    Distance between two points
+    
+    """
+    return math.sqrt((i - i_initial)**2 + (j - j_initial)**2)
+
+def distance_between_points(point1, point2):
+    """
+    This function calculates the distance between 2 points
+
+    Parameters
+    ----------
+    point1 :
+        1st point with its coordinates
+    point2 : 
+        2nd point with its coordinates
+    
+    Returns
+    -------
+    None.
+
+    """
+    return math.sqrt((point2[0] - point1[0]) ** 2 + (point2[1] - point1[1]) ** 2)
+
+# Function to check whether a point C lies between two points A and B
+def entre(A, B, C):
+    """
+    Checks whether the x, y and z coordinates of C are between A and B
+
+    Parameters
+    ----------
+    A : 
+        first point
+    B : 
+        second point
+    C :
+        third point
+
+    Returns
+    -------
+    boolean
+
+    """
+    
+    x1, y1, z1 = A
+    x2, y2, z2 = B
+    x, y, z = C
+    # Check whether the x, y, and z coordinates of C are between A and B
+    if (x1 <= x <= x2 or x2 <= x <= x1) and \
+       (y1 <= y <= y2 or y2 <= y <= y1):
+        return True
+    return False

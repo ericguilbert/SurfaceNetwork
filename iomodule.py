@@ -258,98 +258,7 @@ def writeGpkgNode(nodedict, terrain, directory, nodename):
     nodefile = None
     nodelayer = None
 
-# write shapefiles with saddles, ridge and thalweg initial segments
-def writeShpCandidateSaddle(saddledict, name, terrain):
-    """
-    Records the saddles computed by terrain.computeSaddles() in two files:
-        a shapefile for the nodes and a shapefile for thalweg and ridge segments
-
-    Parameters
-    ----------
-    saddledict : dictionary of saddles
-        Saddles are described by their (i,j) coordinates, their z and their
-        lines. Lines are segments defined by two points (first is the saddle), 
-        a type (thalweg or ridge) and the z of the second point
-    name : string
-        the name of the shapefile.
-    terrain : a terrain class instance recording the dtm
-        Used only for the spatial reference system.
-
-    Returns
-    -------
-    None.
-
-    """
-    driver = ogr.GetDriverByName("ESRI Shapefile")
-
-    saddlename = name + 'node'
-    filename = saddlename+".shp"
-    if os.path.exists(filename):
-        driver.DeleteDataSource(filename)
-    saddlefile = driver.CreateDataSource(filename)
-    crs = osr.SpatialReference(terrain.crs)
-
-    print(saddlename, filename)
-    saddlelayer = saddlefile.CreateLayer(saddlename, crs, ogr.wkbPoint)
-    
-    saddlelayer.CreateField(ogr.FieldDefn("id", ogr.OFTInteger))
-    saddlelayer.CreateField(ogr.FieldDefn("i", ogr.OFTReal))
-    saddlelayer.CreateField(ogr.FieldDefn("j", ogr.OFTReal))
-    #saddlelayer.CreateField(ogr.FieldDefn("z", ogr.OFTReal))
-
-    for id in saddledict:
-        node = saddledict[id]
-        x, y = terrain.fromIndexToCoordinates(
-            saddledict[id]['ij'][0], saddledict[id]['ij'][1])
-        feature = ogr.Feature(saddlelayer.GetLayerDefn())
-        feature.SetField("id", id)
-        feature.SetField("i", node['ij'][0])
-        feature.SetField("j", node['ij'][1])
-        #feature.SetField("z", node['z'])
-
-        wkt = "POINT(%f %f)" %(x,y)
-        point = ogr.CreateGeometryFromWkt(wkt)
-        feature.SetGeometry(point)
-
-        saddlelayer.CreateFeature(feature)
-        feature = None
-    saddlefile = None
-    saddlelayer = None
-
-    ridgename = name + 'line'
-    filename = ridgename+".shp"
-    if os.path.exists(filename):
-        driver.DeleteDataSource(filename)
-    ridgefile = driver.CreateDataSource(filename)
-    crs = osr.SpatialReference(terrain.crs)
-
-    ridgelayer = ridgefile.CreateLayer(saddlename, crs, ogr.wkbLineString)
-
-    ridgelayer.CreateField(ogr.FieldDefn("i", ogr.OFTInteger))
-    ridgelayer.CreateField(ogr.FieldDefn("j", ogr.OFTInteger))
-    #ridgelayer.CreateField(ogr.FieldDefn("z", ogr.OFTReal))
-    ridgelayer.CreateField(ogr.FieldDefn("type", ogr.OFTInteger))
-
-    for id in saddledict:
-        node = saddledict[id]
-        for l in node['line']:
-            feature = ogr.Feature(ridgelayer.GetLayerDefn())
-            feature.SetField("i", node['ij'][0])
-            feature.SetField("j", node['ij'][1])
-            #feature.SetField("z", l[3])
-            feature.SetField('type', l[2])
-            polyline = ogr.Geometry(ogr.wkbLineString)
-            x, y = terrain.fromIndexToCoordinates(l[0][0], l[0][1])
-            polyline.AddPoint(x, y)
-            x, y = terrain.fromIndexToCoordinates(l[1][0], l[1][1])
-            polyline.AddPoint(x, y)
-            feature.SetGeometry(polyline)
-            
-            ridgelayer.CreateFeature(feature)
-    ridgefile = None
-    ridgelayer = None
-
-def writeGpkgPuddle(puddledict, terrain, nodedict, directory, puddlename):
+def writeGpkgPuddle(puddledict, nodedict, terrain, directory, puddlename):
     """
     Parameters
     ----------
@@ -690,5 +599,4 @@ def loadNetwork(directory, name, terrain = None):
         network = pickle.load(networkfile)
         network.terrain = terrain
         return network        
-
 

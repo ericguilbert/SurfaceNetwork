@@ -6,27 +6,28 @@ Created on Tue Aug 5 21:30:05 2020
 """
 from time import perf_counter_ns
 from math import sqrt, atan, pi
+from collections import deque
+import numpy as np
 
+import shapely
 import deffunction as df
-from surfacenetwork import SurfaceNetwork
 from streamnetwork import StreamNetwork
 
-class ExtendedSurfaceNetwork(SurfaceNetwork, StreamNetwork):
+class ExtendedSurfaceNetwork(StreamNetwork):
     """
-    DrainageNetwork stores a drainage network defined by a set of streams and a
-    set of ridges that are the drainage divides. It inherits from SurfaceNetwork
-    and StreamNetwork which produces the stream network as a directed graph and 
-    computes the Strahler order of each stream.
-    DrainageNetwork adds the ridges defined in a similar way as in SurfaceNetwork
-    but adding those drainage divides and it defines catchment areas, allowing
-    for the computation of flow accumulation at each confluence or saddle point.
+    ExtendedSurfaceNetwork stores a ESN defined by a set of thalwegs and a
+    set of ridges that are the drainage divides. It inherits from StreamNetwork 
+    which inherits from SurfaceNetwork and adds functions for flow direction and
+    accumulation computation.
+    ExtendedSurfaceNetwork adds ridges at pits and confluences, allowing
+    for the definition of a dale around each thalweg and the computation of 
+    flow accumulation and drainage bassins.
     """
     
     def buildESNFromTerrain(self, terrain, sd = True, smooth = False):
         """
-        Builds a drainage network on a given terrain. Starts by building the
-        stream network. Follows with ridges. Then computes the catchment area of
-        each stream based on the ridges.
+        Builds a ESN network on a given terrain. Starts by building the
+        thalweg network and the hills. Follows with ridges and dales.
 
         Parameters
         ----------
@@ -34,6 +35,7 @@ class ExtendedSurfaceNetwork(SurfaceNetwork, StreamNetwork):
             Instance of the class Terrain on which the network is built.
         sd : boolean
             True if the network does not have diffluences (single direction)
+            (not validated for sd = False)
         smooth : boolean
             True if the surface is considered smooth. Critical lines are computed
             by using the method from [Josis 21] to fit with the gradient
@@ -72,6 +74,7 @@ class ExtendedSurfaceNetwork(SurfaceNetwork, StreamNetwork):
         self.computeThalwegDales()
         end = perf_counter_ns()
         print("Dale computation time:", end - start)
+
         start = perf_counter_ns()
         self.addPuddles()
         self.mergePuddlesAndAssignFlow()
@@ -82,7 +85,7 @@ class ExtendedSurfaceNetwork(SurfaceNetwork, StreamNetwork):
         self.accumulateFlow()
         end = perf_counter_ns()
         print("Flow accumulation computation time:", end - start)
-        
+
     def instantiateRidgesAtPitsAndConfluences(self):
         """
         Instantiates ridge objects between two thalwegs at pits of degree three
@@ -334,7 +337,6 @@ class ExtendedSurfaceNetwork(SurfaceNetwork, StreamNetwork):
         except:
             print('Exception orderRidges around virtual pit')
         self.nodedict[-1]['ridge'] = ridgelist
-        print(self.nodedict[-1]['ridge'][21:25])
         
     def orderRidgesAroundNodes(self):
         """
@@ -577,365 +579,6 @@ class ExtendedSurfaceNetwork(SurfaceNetwork, StreamNetwork):
             for rr in ridgeline:
                 self.ridgedict[rr]['leftdale'] = dalekey
                 self.ridgedict[rr]['rightdale'] = dalekey
-
-    def accumulateFlow(self):
-        """
-        computes the flow accumulation at the mouth of each thalweg. The flow
-        accumulation is defined by the area of all dales upstream of the mouth.
-        If a node has several downstream thalwegs, the accumulation can be sent
-        to the thalwegs in proportion of the slope or to only one thalweg.
-
-        Parameters
-        ----------
-        sd : boolean
-            True if the network does not have diffluences (single direction).
-            In that case, all the flow follows the steepest slope.
-            Otherwise, the flow to each thalweg depends on the slope
-
-        Returns
-        -------
-        None.
-
-        """
-        sd = self.singleflowdirection
-        visited = {}
-        for it in self.thalwegdict:
-            t = self.thalwegdict[it]
-            idale = t['dale']
-            visited[it] = len(self.upstreamThalwegs(self.fromNode(it)))
-            if idale != -1:
-                t['accumulation'] = self.daledict[idale]['area']
-            else:
-                t['accumulation'] = 0
-    
-        streamlist = [self.downstreamThalwegs(ipt) for ipt in self.nodedict if self.isSpring(ipt)]
-        thalweglist = [it for sublist in streamlist for it in sublist]
-        for ist in thalweglist:
-            stack = [ist]
-            while stack:
-                it = stack.pop()
-                inode = self.toNode(it)
-                downstream = self.downstreamThalwegs(inode)
-                if downstream:
-                    n = len(downstream)
-                    slopelist = [min(0, self.computeStreamSlope(idt)) for idt in downstream]
-                    if df.NOTIN in slopelist:
-                        for i in range(n):
-                            if slopelist[i] != df.NOTIN:
-                                slopelist[i] = 0
-                    accu = [0]*n
-                    accutot = self.thalwegdict[it]['accumulation']
-                    if sd:
-                        maxslope = min(slopelist)
-                        imax = slopelist.index(maxslope)
-                        for i in range(n):
-                            if i == imax:
-                                accu[imax] = accutot
-                            else:
-                                accu[i] = 0
-                                jt = downstream[i]
-                                self.thalwegdict[jt]['headwater'] = True
-                    else:
-                        totalslope = sum(slopelist)
-                        if totalslope == 0:
-                            accu = [accutot/n]*n
-                        else:
-                            accu = [accutot*slopelist[i]/totalslope for i in range(n)]
-                    for i in range(n):
-                        idt = downstream[i]
-                        self.thalwegdict[idt]['accumulation'] += accu[i]
-                        visited[idt] -= 1
-                        if visited[idt] == 0:
-                            stack.append(idt)
-
-    def computeDrainageBasins(self, thalweglist):
-    	basins = []
-    	for it in thalweglist:
-            basin = self.computeDrainageBasin(it)
-            basins.append(basin)
-    	return basins
-
-    def computeDrainageBasin(self, ithalweg):
-        """
-        Computes the drainage basin of a thalweg from the ridges. The method
-        first finds all the ridges delineating the basin and then orders then
-        to form a polygon.
-
-        Parameters
-        ----------
-        ithalweg : integer
-            The index of the thalweg whose drainage basin is computed.
-
-        Returns
-        -------
-        basin : list of integers
-            The list of directed ridges that form the drainage basin of ithalweg.
-
-        """
-        t = self.thalwegdict[ithalweg]
-        if t['dale'] < 1:
-            return None
-        # collect all the dales above the thalweg
-        visited = {} # mark if a thalweg has been visited or not
-        # this is necessary if distributaries are allowed
-        for it in self.thalwegdict:
-            visited[it] = False # mark all thalwegs as unvisited
-        dalelist = []
-        stack = [ithalweg]
-        # the loop visits all thalwegs upstream of ithalweg to collect all the
-        # dales that form the basin
-        while stack:
-            it = stack.pop()
-            if visited[it]:
-                continue
-            visited[it] = True
-            dalelist.append(self.thalwegdict[it]['dale'])
-            if 'headwater' in self.thalwegdict[it]:
-                continue
-            inode = self.fromNode(it)
-            thalweglist = self.upstreamThalwegs(inode)
-            stack += thalweglist
-        # dalelist contains all the dales composing the drainage basin
-        
-        # we need to find the ridges on the border of the basin
-        # we take the boundary of each dale
-        boundarylist = [self.daledict[idale]['boundary'] for idale in dalelist]
-        # each boundary is a list of ridges
-        # we take all the holes in the dale, each hole is a list of rings
-        holelist = [self.daledict[idale]['hole'] for idale in dalelist]
-        # we turn the holes into a list of rings
-        holelist = [iring for sublist in holelist for iring in sublist]
-        # now we can turn everything into lists of ridges
-        outerridgeset = {iridge for sublist in boundarylist for iridge in sublist}
-        innerridgeset = {iridge for sublist in holelist for iridge in sublist}
-        
-        # remove all ridges of innerridgeset from outerridgeset
-        # ridges should have opposite signs
-        # all inner ridges should be removed unless there are some endorheic bassins
-        ridgeset = {iridge for iridge in outerridgeset if -iridge not in innerridgeset}
-        # remove from ridgelist all ridges that appear twice with different sign
-        plusset = {iridge for iridge in ridgeset if iridge > 0}
-        minusset = {iridge for iridge in ridgeset if iridge < 0}
-        plusridgeset = {iridge for iridge in plusset if -iridge not in minusset}
-        minusridgeset = {iridge for iridge in minusset if -iridge not in plusset}
-        ridgeset = plusridgeset | minusridgeset
-        # ridgeset contains all the ridges on the basin boundary
-        
-        # take the ridge on the left of ithalweg
-        inode = self.toNode(ithalweg) # the ridge is connected to inode
-        node = self.nodedict[inode]
-        ridges = node['ridge']
-        #idale = t['dale']
-        #boundary = self.daledict[idale]['boundary']
-        # the first ridge is both in boundary and in ridges with the same sign
-        #basin = [ir for ir in ridges if ir in boundary]
-        basin = [ir for ir in ridges if ir in ridgeset]
-        if len(basin) > 1:
-            print("problem finding ridge left of thalweg", ithalweg)
-        iridge = basin[0]
-        startnode = None
-        endnode = None
-        if iridge > 0:
-            ridge = self.ridgedict[iridge]
-            startnode = ridge['start']
-            endnode = ridge['end']
-        else:
-            ridge = self.ridgedict[-iridge]
-            startnode = ridge['end']
-            endnode = ridge['start']
-        currentnode = endnode
-        while currentnode != startnode:
-            ridgeset.remove(iridge)
-            node = self.nodedict[currentnode]
-            ridges = set(node['ridge']) & ridgeset
-            if len(ridges) > 1:
-                print("problem, two ridges at node", currentnode, iridge, ridges)
-                print(self.nodedict[currentnode]['ridge'])
-                ihill = self.ridgedict[abs(iridge)]['hill']
-                for lr in ridges:
-                    if self.ridgedict[abs(lr)]['hill'] == ihill:
-                        iridge = lr
-                        break
-                #index = node['ridge'].index(-iridge) + 1
-                #if index >= len(node['ridge']):
-                #    index = 0
-                #iridge = node['ridge'][index]
-                if not iridge in ridges:
-                    print("problem finding the next ridge", currentnode, iridge)
-            else:
-                iridge = ridges.pop()
-            basin.append(iridge)
-            if iridge > 0:
-                ridge = self.ridgedict[iridge]
-                currentnode = ridge['end']
-            else:
-                ridge = self.ridgedict[-iridge]
-                currentnode = ridge['start']
-        return basin
-
-    def computeStrahlerOrderDownstream(self, idspring, accumulation):
-        """
-        Computation of the Strahler order starting from a spring and down to the outlet
-        The Strahler order is assigned to both nodes and thalwegs.
-        A thalweg has the same order as its from node
-        For each node, we record the list of springs from which the streams flow
-        We can then note if streams are coming from the same source, in which 
-        case the order is not increased
-
-        Parameters
-        ----------
-        idspring : TYPE
-            DESCRIPTION.
-
-        Returns
-        -------
-        None.
-
-        """
-        # start from spring idspring
-        stack = []
-        order = 0
-        self.nodedict[idspring]['order'] = order
-        
-        # take all streams flowing from idspring
-        downstream = self.downstreamThalwegs(idspring)
-        for it in downstream:
-            # a triplet formed by the tonode of the thalweg, the thalweg id and the from node order
-            if self.thalwegdict[it]['accumulation'] < accumulation:
-                order = 0
-            else:
-                order = 1
-            stack.append((self.toNode(it), it, order))
-        
-        # depth first search of all the nodes below the spring
-        while stack:
-            # we have a node, an upper stream and the order of the from node
-            (inode, iupthalweg, order) = stack.pop()
-            node = self.nodedict[inode]
-            # if the spring is already in node source, that means we already 
-            # went through this node from the same spring in another way
-            if idspring in node['source']:
-                self.thalwegdict[iupthalweg]['order'] = order
-                # the node takes the highest order of the streams above
-                # if the order has been modified, we go down to update other 
-                # streams and nodes below
-                if node['order'] < order:
-                    node['order'] = order
-                    downstream = self.downstreamThalwegs(inode)
-                    for it in downstream:
-                        if 'headwater' in self.thalwegdict[it]:
-                            torder = 0
-                        else:
-                            torder = order
-                        if torder == 0 and self.thalwegdict[it]['accumulation'] >= accumulation:
-                            stack.append((self.toNode(it), it, 1))
-                        else:
-                            stack.append((self.toNode(it), it, torder))
-            else:
-                # first time we go through this node from this spring
-                node['source'].add(idspring)
-                upstream = self.upstreamThalwegs(inode)
-                upstream.remove(iupthalweg)
-                self.thalwegdict[iupthalweg]['order'] = order
-                # if the node order is higher, we stop there
-                # if the order is equal, we increase the order and go down
-                # if it's lower, assign the new order and keep going
-                if upstream:
-                    orders = [self.thalwegdict[k]['order'] for k in upstream]
-                    oldorder = max(orders)
-                    if order < oldorder:
-                        continue # we stop going down, the stream reached a bigger stream
-                    elif order == oldorder and order > 0:
-                        order += 1
-                node['order'] = order
-                downstream = self.downstreamThalwegs(inode)
-                for it in downstream:
-                    if 'headwater' in self.thalwegdict[it]:
-                        torder = 0
-                    else:
-                        torder = order
-                    if torder == 0 and self.thalwegdict[it]['accumulation'] >= accumulation:
-                        stack.append((self.toNode(it), it, 1))
-                    else:
-                        stack.append((self.toNode(it), it, torder))
-                
-    def assignStrahlerOrder(self, threshold = 0):
-        """
-        Compute the Strahler order for all streams in the network
-        The order is computed starting from each spring
-        All streams that have an accumulation lower than the threshold have an
-        order of 0. Threshold is given in square units.
-
-        Returns
-        -------
-        None.
-
-        """
-        # convert square units in square pixels
-        accumulation = threshold/(self.terrain.x_size*self.terrain.x_size)
-        # initialise all nodes with an order 0 and no spring
-        for inode, node in self.nodedict.items():
-            node['order'] = 0
-            node['source'] = set()
-    
-        # set all thalweg orders to 0 by default 
-        for it, t in self.thalwegdict.items():
-            t['order'] = 0
-        
-        # take all nodes that are springs
-        springlist = [key for key in self.nodedict if self.isSpring(key)]
-        # we need to deal with the case where saddles are at the same height
-        
-        # go down the streams from the springs to assign the orders
-        for inode in springlist:
-            self.computeStrahlerOrderDownstream(inode, accumulation)
-
-    def assignHortonOrder(self):
-        # set all thalweg Horton orders to 0 by default 
-        for it, t in self.thalwegdict.items():
-            if 'order' not in t:
-                print("Compute the Strahler order first")
-                return
-            t['horton'] = 0
-        
-        # get all sinks of the network
-        outletlist = [ipt for ipt in self.nodedict if not self.downstreamThalwegs(ipt)]
-        
-        # set a stack of thalwegs to start from
-        thalweglistlist = [self.upstreamThalwegs(ipt) for ipt in outletlist]
-        thalwegstack = []
-        for ilist in thalweglistlist:
-            for it in ilist:
-                order = self.thalwegdict[it]['order']
-                if order > 0:
-                    thalwegstack.append((it, order))
-                
-        while thalwegstack:
-            (it, order) = thalwegstack.pop()
-            if order <= self.thalwegdict[it]['horton']:
-                continue
-            self.thalwegdict[it]['horton'] = order
-            upnode = self.fromNode(it)
-            thalweglist = self.upstreamThalwegs(upnode)
-            thalweglist = [i for i in thalweglist if self.thalwegdict[i]['order']>0]
-            if not thalweglist:
-                continue
-            n = len(thalweglist)
-            # get the thalwegs with the highest order
-            orders = [self.thalwegdict[i]['order'] for i in thalweglist]
-            maxorder = max(orders)
-            sublist = [thalweglist[i] for i in range(n) if orders[i] == maxorder]
-            # get the thalweg with the highest accumulation
-            acculist = [self.thalwegdict[i]['accumulation'] for i in sublist]
-            maxaccu = max(acculist)
-            accuindex = acculist.index(maxaccu)
-            mainthalweg = sublist[accuindex]
-            # the thalweg is put in the stack with the horton order
-            thalwegstack.append((mainthalweg, order))
-            # other thalwegs are added with their own order
-            for it in thalweglist:
-                if it != mainthalweg and self.thalwegdict[it]['order'] > 0:
-                    thalwegstack.append((it, self.thalwegdict[it]['order']))
 
     def addThalwegSlopeInDegree(self):
         for it, t in self.thalwegdict.items():

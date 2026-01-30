@@ -655,7 +655,7 @@ class ThalwegNetwork:
         # no thalwegkey 0 because key sign indicates direction
         thalwegkey=1
         nextthalweg = thalwegkey + 1
-        floorkey={}
+        self.floorkey={}
         
         # thalwegs all start at saddles
         saddlelist = [i for i in self.nodedict if self.nodedict[i]['type'] == df.SADDLE]
@@ -680,7 +680,7 @@ class ThalwegNetwork:
                     if self.terrain.pixelclass[i,j] == df.SLOPE:
                         keepgoing = True
                         self.terrain.pixelclass[i,j] = df.THALWEG
-                        floorkey[i,j] = thalwegkey
+                        self.floorkey[i,j] = thalwegkey
                     else:
                         keepgoing = False
                 else:
@@ -749,25 +749,29 @@ class ThalwegNetwork:
                             y2 = ldr[k1][1]
                             z1 = v[kmin] - z
                             z2 = v1
-                            det = 1/(x1*y2 - x2*y1)
-                            a = det*(y2*z1 - y1*z2)
-                            b = det*(x1*z2 - x2*z1)
-                            # the gradient direction is given by (a,b)
-                            # now we compute the lag
-                            # the lag is the difference between ldr[kmin] and (a,b)
-                            if (ldr[kmin][0] == ldr[k1][0]): # compute b for a = 1
-                                b = -b/a
-                                a = ldr[kmin][0]
-                                if abs(b) < abs(a):
-                                    lag = b - ldr[kmin][1]
+                            if z1 != self.terrain.nodata and z2 != self.terrain.nodata:
+                                det = 1./(x1*y2 - x2*y1)
+                                a = det*(y2*z1 - y1*z2)
+                                b = det*(x1*z2 - x2*z1)
+                                # the gradient direction is given by (a,b)
+                                # now we compute the lag
+                                # the lag is the difference between ldr[kmin] and (a,b)
+                                if (ldr[kmin][0] == ldr[k1][0]): # compute b for a = 1
+                                    b = -b/a
+                                    a = ldr[kmin][0]
+                                    if abs(b) < abs(a):
+                                        lag = b - ldr[kmin][1]
+                                    else:
+                                        lag = 0
                                 else:
-                                    lag = 0
+                                    a = -a/b
+                                    b = ldr[kmin][1]
+                                    if abs(a) < abs(b):
+                                        lag = a - ldr[kmin][0]
+                                    else: 
+                                        lag = 0
                             else:
-                                a = -a/b
-                                b = ldr[kmin][1]
-                                if abs(a) < abs(b):
-                                    lag = a - ldr[kmin][0]
-                                else: lag = 0
+                                lag = 0
                             # if we keep going the same way, correct with the lag
                             if (ldr[kmin] == oldldr):
                                 lag += oldlag
@@ -791,7 +795,7 @@ class ThalwegNetwork:
                         if self.terrain.pixelclass[i,j] == df.SLOPE:
                             keepgoing = True
                             self.terrain.pixelclass[i,j] = df.THALWEG
-                            floorkey[i,j] = thalwegkey
+                            self.floorkey[i,j] = thalwegkey
                         else:
                             keepgoing = False
                             outbound = False
@@ -812,7 +816,7 @@ class ThalwegNetwork:
                 else:
                     if self.terrain.pixelclass[i,j] == df.THALWEG:
                         # if we reach an existing thalweg, we have to create a confluence
-                        idthalweg = floorkey[i,j]
+                        idthalweg = self.floorkey[i,j]
                         # we create the new node
                         endindex = self.nodekey
                         self.nodeidx[(i,j)] = self.nodekey
@@ -847,7 +851,7 @@ class ThalwegNetwork:
                         ndt.append(-nextthalweg)
                         # we update floorkey with nextthalweg
                         for k in ptlist2[1:-1]:
-                            floorkey[k] = nextthalweg
+                            self.floorkey[k] = nextthalweg
                         nextthalweg += 1
 # this can be simplified, all non thalweg cases are treated the same way
                     elif self.terrain.pixelclass[i,j] == df.CONFLUENCE: 
@@ -1203,60 +1207,4 @@ class ThalwegNetwork:
                     break
         for i in nopeak:
             del self.hilldict[i]
-            
-    def getKeySaddle(self, idhill):
-        """
-        The key saddle of a hill is the highest saddle on its boundary
 
-        Parameters
-        ----------
-        idhill : integer
-            id of the hill.
-
-        Returns
-        -------
-        idmax : integer
-            id of the key saddle.
-
-        """
-        # get all the saddles located on the hill boundary
-        thalwegs = self.hilldict[idhill]['boundary']
-        saddleset = set()
-        for it in thalwegs:
-            isaddle = self.thalwegdict[abs(it)]['start']
-            saddleset.add(isaddle)
-        # get the highest saddle
-        idmax = -1
-        zmax = self.terrain.nodata
-        for isaddle in saddleset:
-            z = self.nodedict[isaddle]['z']
-            if z > zmax:
-                idmax = isaddle
-                zmax = z
-        return idmax                
-
-    def getNeighbouringHills(self, idsaddle):
-        """
-        Return the set of hills around a saddle. As a set, hills are not ordered
-        around the node.
-
-        Parameters
-        ----------
-        idsaddle : integer
-            id of the saddle.
-
-        Returns
-        -------
-        hills : set of integers
-            Set containing the ids of hills around idsaddle.
-
-        """
-        saddle = self.nodedict[idsaddle]
-        thalwegs = saddle['thalweg']
-        hills = set()
-        for it in thalwegs:
-            it = abs(it)
-            t = self.thalwegdict[it]
-            hills.add(t['lefthill'])
-            hills.add(t['righthill'])
-        return hills
