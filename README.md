@@ -29,3 +29,8 @@ https://doi.org/10.5311/JOSIS.2023.26.240
 Two files are added to build a new network that includes the surface network and the drainage network
 streamnetwork.py, a class that inherits from thalwegnetwork, that computes puddles (places where the water accumulates and the flow is interrupted) and adds a flow direction to each thalweg. The flow direction is directed towards the lowest point except in puddles where it is directed towards the outlet.
 extendedsurfacenetwork.py, a class that inherits from surfacenetwork and streamnetwork. It adds ridges starting from confluences and pits. Dales are redefined in a one-to-one relationship to thalwegs. Flow direction and dales are used to compute a flow accumulation for each thalweg. Drainage networks can be extracted from the extended surface network by defining an accumulation threshold. Methods are added to compute drainage basins and the Strahler order.
+
+# Drainage Network
+Construction of a drainage network from a raster DTM and a set of culverts. The code is an implementation of the algorithm presented in https://doi.org/10.1080/15230406.2026.2633277
+
+A new class, Topohydronetwork, is added. The class inherits from the extended surface network class.
