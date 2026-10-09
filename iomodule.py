@@ -1,17 +1,18 @@
 # coding=utf-8
 """
 iomodule.py:
-    Several functions used to load a raster DTM and save the different dictionaries composing the surface network into geopackages
+    Several functions used to load a raster DTM and save the different dictionaries composing the surface network into shapefiles
     
     author: Eric Guilbert
 """
 import os
-import numpy as np
+import numpy
 import pickle
 import shapely
 import json
 os.environ["USE_PATH_FOR_GDAL_PYTHON"] = "YES"
 from osgeo import ogr, osr, gdal, gdal_array
+from celltype import CellType
 
 
 # read a raster DTM from a file
@@ -42,7 +43,7 @@ def readRasterDTM(filename, terrain):
         maxvalue = band.GetMaximum()
         nodata = band.GetNoDataValue()
     print("in readRasterDTM", nodata, minvalue)
-    if not nodata or np.isnan(nodata) or nodata > minvalue:
+    if not nodata or nodata > minvalue:
         nodata = minvalue - 1
     else:
         if minvalue < nodata:
@@ -88,20 +89,26 @@ def writeGpkgLine(linedict, terrain, directory, linename):
     linelayer = linefile.CreateLayer(linename, crs, ogr.wkbLineString)
 
     linelayer.CreateField(ogr.FieldDefn("id", ogr.OFTInteger))
-    #linelayer.CreateField(ogr.FieldDefn("start", ogr.OFTInteger))
-    #linelayer.CreateField(ogr.FieldDefn("end", ogr.OFTInteger))
+    linelayer.CreateField(ogr.FieldDefn("start", ogr.OFTInteger))
+    linelayer.CreateField(ogr.FieldDefn("end", ogr.OFTInteger))
+    linelayer.CreateField(ogr.FieldDefn("type", ogr.OFTString))
+    if 'slope' in linedict[1]:
+        linelayer.CreateField(ogr.FieldDefn("slope", ogr.OFTReal))
     layerdef = linelayer.GetLayerDefn()
 
-    linelayer.StartTransaction()
-    for id, line in linedict.items():
+    linelayer.StartTransaction()    
+    for id in linedict:
+        line = linedict[id]
         feature = ogr.Feature(layerdef)
         feature.SetField("id", id)
-        #feature.SetField("start", line['start'])
-        #feature.SetField("end", line['end'])
-
+        feature.SetField("start", line['start'])
+        feature.SetField("end", line['end'])
+        feature.SetField('type', CellType.toText(line['type']))
+        if 'slope' in line:
+            feature.SetField("slope", line['slope'])
+        directedline = list(line['polyline'])
         polyline = ogr.Geometry(ogr.wkbLineString)
-        #for p in line['polyline']:
-        for p in line:
+        for p in directedline:
             x, y = terrain.fromIndexToCoordinates(p[0],p[1])
             polyline.AddPoint(x, y)
 
@@ -109,6 +116,73 @@ def writeGpkgLine(linedict, terrain, directory, linename):
         
         linelayer.CreateFeature(feature)
         feature = None
+
+    linelayer.CommitTransaction()
+    linefile = None
+    linelayer = None
+
+# write a drainage line geopackage from a dict
+def writeGpkgFlowLine(linedict, terrain, directory, linename):
+    driver = ogr.GetDriverByName("GPKG")
+    filename = directory+linename+".gpkg"
+    if os.path.exists(filename):
+        driver.DeleteDataSource(filename)
+    linefile = driver.CreateDataSource(filename)
+    crs = osr.SpatialReference(terrain.crs)
+    
+    linelayer = linefile.CreateLayer(linename, crs, ogr.wkbLineString)
+
+    linelayer.CreateField(ogr.FieldDefn("id", ogr.OFTInteger))
+    linelayer.CreateField(ogr.FieldDefn("start", ogr.OFTInteger))
+    linelayer.CreateField(ogr.FieldDefn("end", ogr.OFTInteger))
+    linelayer.CreateField(ogr.FieldDefn("type", ogr.OFTString))
+    orderfield = False
+    hortonfield = False
+    layerdef = linelayer.GetLayerDefn()
+
+    linelayer.CreateField(ogr.FieldDefn("accumulation", ogr.OFTReal))
+    if 'order' in linedict[1]:
+        linelayer.CreateField(ogr.FieldDefn("order", ogr.OFTInteger))
+        orderfield = True
+    if 'horton' in linedict[1]:
+        linelayer.CreateField(ogr.FieldDefn("horton", ogr.OFTInteger))
+        hortonfield = True
+    linelayer.CreateField(ogr.FieldDefn("slope", ogr.OFTReal))
+    layerdef = linelayer.GetLayerDefn()
+
+    linelayer.StartTransaction()    
+    for id in linedict:
+        line = linedict[id]
+        if not (line['type'] & CellType.WATERCOURSE_FLAG):
+            continue
+        feature = ogr.Feature(layerdef)
+        feature.SetField("id", id)
+        feature.SetField("start", line['start'])
+        feature.SetField("end", line['end'])
+        feature.SetField('type', CellType.toText(line['type']))
+        if 'accumulation' in line:
+            feature.SetField("accumulation", float(line['accumulation']))
+        else:
+            feature.SetField("accumulation", 0)
+        if orderfield and 'order' in line:
+            feature.SetField("order", line['order'])
+        if hortonfield and 'horton' in line:
+            feature.SetField("horton", line['horton'])
+        if 'slope' in line:
+            feature.SetField("slope", line['slope'])
+        directedline = list(line['polyline'])
+        if 'flowdirection' in line and not line['flowdirection']:
+            directedline = reversed(directedline)
+        polyline = ogr.Geometry(ogr.wkbLineString)
+        for p in directedline:
+            x, y = terrain.fromIndexToCoordinates(p[0],p[1])
+            polyline.AddPoint(x, y)
+
+        feature.SetGeometry(polyline)
+        
+        linelayer.CreateFeature(feature)
+        feature = None
+
     linelayer.CommitTransaction()
     linefile = None
     linelayer = None
@@ -220,13 +294,10 @@ def writeGpkgNode(nodedict, terrain, directory, nodename):
     nodelayer.CreateField(ogr.FieldDefn("i", ogr.OFTReal))
     nodelayer.CreateField(ogr.FieldDefn("j", ogr.OFTReal))
     nodelayer.CreateField(ogr.FieldDefn("z", ogr.OFTReal))
-    fieldt = ogr.FieldDefn("thalweg", ogr.OFTString)
+    fieldt = ogr.FieldDefn("line", ogr.OFTString)
     fieldt.SetWidth(128)
     nodelayer.CreateField(fieldt)
-    fieldr = ogr.FieldDefn("ridge", ogr.OFTString)
-    fieldr.SetWidth(128)
-    nodelayer.CreateField(fieldr)
-    nodelayer.CreateField(ogr.FieldDefn("type", ogr.OFTInteger))
+    nodelayer.CreateField(ogr.FieldDefn("type", ogr.OFTString))
     layerdef = nodelayer.GetLayerDefn()
     
     virtualpit = nodedict.pop(-1, None)
@@ -234,17 +305,15 @@ def writeGpkgNode(nodedict, terrain, directory, nodename):
     for id, pss in nodedict.items():
         (i, j) = pss['ij']
         x, y = terrain.fromIndexToCoordinates(i, j)
-        thalwegtxt = ', '.join(str(x) for x in pss['thalweg'])
-        ridgetxt = ', '.join(str(x) for x in pss['ridge'])
+        thalwegtxt = ', '.join(str(x) for x in pss['line'])
 
         feature = ogr.Feature(layerdef)
         feature.SetField("id", id)
         feature.SetField("i", i)
         feature.SetField("j", j)
         feature.SetField("z", float(pss["z"]))
-        feature.SetField("type", pss['type'])
-        feature.SetField("thalweg", thalwegtxt)
-        feature.SetField("ridge", ridgetxt)
+        feature.SetField("type", CellType.toText(pss['type']))
+        feature.SetField("line", thalwegtxt)
         
         wkt = "POINT(%f %f)" %(x,y)
         point = ogr.CreateGeometryFromWkt(wkt)
@@ -257,6 +326,168 @@ def writeGpkgNode(nodedict, terrain, directory, nodename):
         nodedict[-1] = virtualpit
     nodefile = None
     nodelayer = None
+
+# write shapefiles with saddles, ridge and thalweg initial segments
+def writeShpCandidateSaddle(saddledict, name, terrain):
+    """
+    Records the saddles computed by terrain.computeSaddles() in two files:
+        a shapefile for the nodes and a shapefile for thalweg and ridge segments
+
+    Parameters
+    ----------
+    saddledict : dictionary of saddles
+        Saddles are described by their (i,j) coordinates, their z and their
+        lines. Lines are segments defined by two points (first is the saddle), 
+        a type (thalweg or ridge) and the z of the second point
+    name : string
+        the name of the shapefile.
+    terrain : a terrain class instance recording the dtm
+        Used only for the spatial reference system.
+
+    Returns
+    -------
+    None.
+
+    """
+    driver = ogr.GetDriverByName("ESRI Shapefile")
+
+    saddlename = name + 'node'
+    filename = saddlename+".shp"
+    if os.path.exists(filename):
+        driver.DeleteDataSource(filename)
+    saddlefile = driver.CreateDataSource(filename)
+    crs = osr.SpatialReference(terrain.crs)
+
+    print(saddlename, filename)
+    saddlelayer = saddlefile.CreateLayer(saddlename, crs, ogr.wkbPoint)
+    
+    saddlelayer.CreateField(ogr.FieldDefn("id", ogr.OFTInteger))
+    saddlelayer.CreateField(ogr.FieldDefn("i", ogr.OFTReal))
+    saddlelayer.CreateField(ogr.FieldDefn("j", ogr.OFTReal))
+    #saddlelayer.CreateField(ogr.FieldDefn("z", ogr.OFTReal))
+
+    for id in saddledict:
+        node = saddledict[id]
+        x, y = terrain.fromIndexToCoordinates(
+            saddledict[id]['ij'][0], saddledict[id]['ij'][1])
+        feature = ogr.Feature(saddlelayer.GetLayerDefn())
+        feature.SetField("id", id)
+        feature.SetField("i", node['ij'][0])
+        feature.SetField("j", node['ij'][1])
+        #feature.SetField("z", node['z'])
+
+        wkt = "POINT(%f %f)" %(x,y)
+        point = ogr.CreateGeometryFromWkt(wkt)
+        feature.SetGeometry(point)
+
+        saddlelayer.CreateFeature(feature)
+        feature = None
+    saddlefile = None
+    saddlelayer = None
+
+    ridgename = name + 'line'
+    filename = ridgename+".shp"
+    if os.path.exists(filename):
+        driver.DeleteDataSource(filename)
+    ridgefile = driver.CreateDataSource(filename)
+    crs = osr.SpatialReference(terrain.crs)
+
+    ridgelayer = ridgefile.CreateLayer(saddlename, crs, ogr.wkbLineString)
+
+    ridgelayer.CreateField(ogr.FieldDefn("i", ogr.OFTInteger))
+    ridgelayer.CreateField(ogr.FieldDefn("j", ogr.OFTInteger))
+    #ridgelayer.CreateField(ogr.FieldDefn("z", ogr.OFTReal))
+    ridgelayer.CreateField(ogr.FieldDefn("type", ogr.OFTInteger))
+
+    for id in saddledict:
+        node = saddledict[id]
+        for l in node['line']:
+            feature = ogr.Feature(ridgelayer.GetLayerDefn())
+            feature.SetField("i", node['ij'][0])
+            feature.SetField("j", node['ij'][1])
+            #feature.SetField("z", l[3])
+            feature.SetField('type', l[2])
+            polyline = ogr.Geometry(ogr.wkbLineString)
+            x, y = terrain.fromIndexToCoordinates(l[0][0], l[0][1])
+            polyline.AddPoint(x, y)
+            x, y = terrain.fromIndexToCoordinates(l[1][0], l[1][1])
+            polyline.AddPoint(x, y)
+            feature.SetGeometry(polyline)
+            
+            ridgelayer.CreateFeature(feature)
+    ridgefile = None
+    ridgelayer = None
+
+def writeShpSaddle(nodedict, name, terrain):
+    driver = ogr.GetDriverByName("ESRI Shapefile")
+    nodename = name + "node"
+    filename = nodename+".shp"
+    if os.path.exists(filename):
+        driver.DeleteDataSource(filename)
+    nodefile = driver.CreateDataSource(filename)
+    crs = osr.SpatialReference(terrain.crs)
+    
+    nodelayer = nodefile.CreateLayer(nodename, crs, ogr.wkbPoint)
+    
+    nodelayer.CreateField(ogr.FieldDefn("id", ogr.OFTInteger))
+    nodelayer.CreateField(ogr.FieldDefn("i", ogr.OFTReal))
+    nodelayer.CreateField(ogr.FieldDefn("j", ogr.OFTReal))
+    nodelayer.CreateField(ogr.FieldDefn("type", ogr.OFTInteger))
+
+    virtualpit = nodedict.pop(-1, None)
+    for id, pss in nodedict.items():
+        (i, j) = pss['ij']
+        x, y = terrain.fromIndexToCoordinates(i, j)
+
+        feature = ogr.Feature(nodelayer.GetLayerDefn())
+        feature.SetField("id", id)
+        feature.SetField("i", i)
+        feature.SetField("j", j)
+        feature.SetField("z", float(pss["z"]))
+        feature.SetField("type", pss['type'])
+        
+        wkt = "POINT(%f %f)" %(x,y)
+        point = ogr.CreateGeometryFromWkt(wkt)
+        feature.SetGeometry(point)
+
+        nodelayer.CreateFeature(feature)
+        feature = None
+    if virtualpit:
+        nodedict[-1] = virtualpit
+    nodefile = None
+    nodelayer = None
+
+    ridgename = name + 'line'
+    filename = ridgename+".shp"
+    if os.path.exists(filename):
+        driver.DeleteDataSource(filename)
+    ridgefile = driver.CreateDataSource(filename)
+    crs = osr.SpatialReference(terrain.crs)
+
+    ridgelayer = ridgefile.CreateLayer(nodename, crs, ogr.wkbLineString)
+
+    ridgelayer.CreateField(ogr.FieldDefn("i", ogr.OFTInteger))
+    ridgelayer.CreateField(ogr.FieldDefn("j", ogr.OFTInteger))
+    ridgelayer.CreateField(ogr.FieldDefn("type", ogr.OFTInteger))
+
+    for id in nodedict:
+        node = nodedict[id]
+        for l in node['line']:
+            feature = ogr.Feature(ridgelayer.GetLayerDefn())
+            feature.SetField("i", node['ij'][0])
+            feature.SetField("j", node['ij'][1])
+            #feature.SetField("z", l[3])
+            feature.SetField('type', l[2])
+            polyline = ogr.Geometry(ogr.wkbLineString)
+            x, y = terrain.fromIndexToCoordinates(l[0][0], l[0][1])
+            polyline.AddPoint(x, y)
+            x, y = terrain.fromIndexToCoordinates(l[1][0], l[1][1])
+            polyline.AddPoint(x, y)
+            feature.SetGeometry(polyline)
+            
+            ridgelayer.CreateFeature(feature)
+    ridgefile = None
+    ridgelayer = None
 
 def writeGpkgPuddle(puddledict, nodedict, terrain, directory, puddlename):
     """
@@ -593,10 +824,187 @@ def writeGpkgBasins(thalweglist, basinlist, network, directory, basinname):
     polygonlayer.CommitTransaction()
     polygonfile = None
     polygonlayer = None
+    
+def writeGpkgProms(promlist, promtree, directory, promname):
+    driver = ogr.GetDriverByName("GPKG")
+    filename = directory+promname+".gpkg"
+    if os.path.exists(filename):
+        driver.DeleteDataSource(filename)
+    multilinefile = driver.CreateDataSource(filename)
+    network = promtree.esn
+    terrain = network.terrain    
+    crs = osr.SpatialReference(terrain.crs)
+
+    multilinelayer = multilinefile.CreateLayer(promname, crs, ogr.wkbMultiLineString)
+
+    multilinelayer.CreateField(ogr.FieldDefn("peak", ogr.OFTInteger))
+    multilinelayer.CreateField(ogr.FieldDefn("saddle", ogr.OFTInteger))
+    layerdef = multilinelayer.GetLayerDefn()
+
+    multilinelayer.StartTransaction() 
+    for iprom in promlist:
+        prom = promtree.promdict[iprom]
+        peak = prom['peak']
+        saddle = prom['saddle']
+        border = promtree.getBorder(iprom)
+        feature = ogr.Feature(layerdef)
+        feature.SetField("peak", peak)
+        feature.SetField("saddle", saddle)
+        multiline = ogr.Geometry(ogr.wkbMultiLineString)
+        for it in border:
+            polyline = network.thalwegdict[it]['polyline']
+            line = ogr.Geometry(ogr.wkbLineString)
+            for p in polyline:
+                x,y = terrain.fromIndexToCoordinates(p[0], p[1])
+                line.AddPoint(x, y)
+            multiline.AddGeometry(line)
+        feature.SetGeometry(multiline)
         
+        multilinelayer.CreateFeature(feature)
+        feature = None
+        
+    multilinelayer.CommitTransaction()
+    multilinefile = None
+    multilinelayer = None
+
+def writeGpkgDeps(deplist, deptree, directory, depname):
+    driver = ogr.GetDriverByName("GPKG")
+    filename = directory+depname+".gpkg"
+    if os.path.exists(filename):
+        driver.DeleteDataSource(filename)
+    multilinefile = driver.CreateDataSource(filename)
+    network = deptree.esn
+    terrain = network.terrain    
+    crs = osr.SpatialReference(terrain.crs)
+
+    multilinelayer = multilinefile.CreateLayer(depname, crs, ogr.wkbMultiLineString)
+
+    multilinelayer.CreateField(ogr.FieldDefn("pit", ogr.OFTInteger))
+    multilinelayer.CreateField(ogr.FieldDefn("outlet", ogr.OFTInteger))
+    layerdef = multilinelayer.GetLayerDefn()
+
+    multilinelayer.StartTransaction() 
+    for idep in deplist:
+        dep = deptree.depdict[idep]
+        pit = dep['pit']
+        outlet = dep['outlet']
+        border = deptree.getBorder(idep)
+        feature = ogr.Feature(layerdef)
+        feature.SetField("pit", pit)
+        feature.SetField("outlet", outlet)
+        multiline = ogr.Geometry(ogr.wkbMultiLineString)
+        for ir in border:
+            polyline = network.linedict[ir]['polyline']
+            line = ogr.Geometry(ogr.wkbLineString)
+            for p in polyline:
+                x,y = terrain.fromIndexToCoordinates(p[0], p[1])
+                line.AddPoint(x, y)
+            multiline.AddGeometry(line)
+        feature.SetGeometry(multiline)
+        
+        multilinelayer.CreateFeature(feature)
+        feature = None
+        
+    multilinelayer.CommitTransaction()
+    multilinefile = None
+    multilinelayer = None
+
+def writeGpkgValleys(deplist, deptree, directory, depname):
+    driver = ogr.GetDriverByName("GPKG")
+    filename = directory+depname+".gpkg"
+    if os.path.exists(filename):
+        driver.DeleteDataSource(filename)
+    multilinefile = driver.CreateDataSource(filename)
+    network = deptree.esn
+    terrain = network.terrain    
+    crs = osr.SpatialReference(terrain.crs)
+
+    # save the borders
+    multilinelayer = multilinefile.CreateLayer("border", crs, ogr.wkbMultiLineString)
+
+    multilinelayer.CreateField(ogr.FieldDefn("pit", ogr.OFTInteger))
+    multilinelayer.CreateField(ogr.FieldDefn("outlet", ogr.OFTInteger))
+    multilinelayer.CreateField(ogr.FieldDefn("order", ogr.OFTInteger))
+    layerdef = multilinelayer.GetLayerDefn()
+
+    multilinelayer.StartTransaction() 
+    for idep in deplist:
+        dep = deptree.depdict[idep]
+        pit = dep['pit']
+        outlet = dep['outlet']
+        order = dep['order']
+        border = deptree.getBorder(idep)
+        feature = ogr.Feature(layerdef)
+        feature.SetField("pit", pit)
+        feature.SetField("outlet", outlet)
+        feature.SetField("order", order)
+        multiline = ogr.Geometry(ogr.wkbMultiLineString)
+        for ir in border:
+            polyline = network.ridgedict[ir]['polyline']
+            line = ogr.Geometry(ogr.wkbLineString)
+            for p in polyline:
+                x,y = terrain.fromIndexToCoordinates(p[0], p[1])
+                line.AddPoint(x, y)
+            multiline.AddGeometry(line)
+        feature.SetGeometry(multiline)
+        
+        multilinelayer.CreateFeature(feature)
+        feature = None
+        
+    multilinelayer.CommitTransaction()
+
+    # save the skeletons
+    multilinelayer = multilinefile.CreateLayer("skeleton", crs, ogr.wkbMultiLineString)
+
+    multilinelayer.CreateField(ogr.FieldDefn("pit", ogr.OFTInteger))
+    multilinelayer.CreateField(ogr.FieldDefn("inlet", ogr.OFTInteger))
+    multilinelayer.CreateField(ogr.FieldDefn("outlet", ogr.OFTInteger))
+    multilinelayer.CreateField(ogr.FieldDefn("order", ogr.OFTInteger))
+    layerdef = multilinelayer.GetLayerDefn()
+
+    multilinelayer.StartTransaction() 
+    for idep in deplist:
+        dep = deptree.depdict[idep]
+        pit = dep['pit']
+        inlet = dep['inlet']
+        outlet = dep['outlet']
+        skeleton = dep['skeleton']
+        order = dep['order']
+        feature = ogr.Feature(layerdef)
+        feature.SetField("pit", pit)
+        feature.SetField("inlet", inlet)
+        feature.SetField("outlet", outlet)
+        feature.SetField("order", order)
+        multiline = ogr.Geometry(ogr.wkbMultiLineString)
+        for it in skeleton:
+            polyline = network.thalwegdict[it]['polyline']
+            line = ogr.Geometry(ogr.wkbLineString)
+            for p in polyline:
+                x,y = terrain.fromIndexToCoordinates(p[0], p[1])
+                line.AddPoint(x, y)
+            multiline.AddGeometry(line)
+        feature.SetGeometry(multiline)
+        
+        multilinelayer.CreateFeature(feature)
+        feature = None
+        
+    multilinelayer.CommitTransaction()
+    multilinelayer = None
+    multilinefile = None
+    
+def writeRasterMatrix(array, terrain, directory, rastername):
+    filename = directory + rastername + ".tif"
+    m, n = terrain.m, terrain.n
+    raster = gdal.GetDriverByName('GTiff').Create(filename, n, m, 1, gdal.GDT_Float32)
+    geotransform = (terrain.upper_left_x, terrain.x_size, 0, terrain.upper_left_y, 0, terrain.y_size)
+    raster.SetGeoTransform(geotransform)
+    raster.SetProjection(terrain.crs)
+    raster.GetRasterBand(1).SetNoDataValue(terrain.nodata)
+    raster.GetRasterBand(1).WriteArray(array)
+    raster.FlushCache()
+    
 def loadNetwork(directory, name, terrain = None):
     with open(directory + name + '.snw', 'rb') as networkfile:
         network = pickle.load(networkfile)
         network.terrain = terrain
         return network        
-

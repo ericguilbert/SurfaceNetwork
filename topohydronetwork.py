@@ -6,20 +6,23 @@ Created on Tue Oct  1 23:44:12 2023
 """
 
 from time import perf_counter_ns
+from math import sqrt
+
 from extendedsurfacenetwork import ExtendedSurfaceNetwork
+from celltype import CellType
+import deffunction as df
+from terrain import bresenham
+
 import geopandas as gpd
 from shapely.geometry import LineString
 from shapely.wkt import loads
-import deffunction as df
-from math import sqrt
 from pyproj import Transformer
-from terrain import bresenham
 
 
 class TopoHydroNetwork(ExtendedSurfaceNetwork):
 
         
-    def buildTopoHydroFromTerrain(self, terrain, culvert, sd = True):
+    def buildTopoHydroFromTerrain(self, terrain, culvert, sd = True, roadheight = 0.5):
         """
         Builds a surface network on a given terrain. Start by detecting saddles.
         Follows with thalwegs. Then integrates culverts and corrects thalweg. 
@@ -41,25 +44,22 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         None.
 
         """
-        self.culvertdict = {}
         self.terrain = terrain
-        self.culvert = culvert
+#        self.culvert = culvert
+        self.roadheight = roadheight
         
         self.buildFlowThalwegsFromTerrain(terrain, correction = False)
         start = perf_counter_ns()
-        self.addBifurcation()
+        inlet, outlet = self.computeCulvertInletsAndOutlets(culvert)
+        self.createCulverts(inlet, outlet)
         end = perf_counter_ns()
-        print("Bifurcation computation time:", end - start)
-        start = perf_counter_ns()
-        self.computeCulverts()
-        end = perf_counter_ns()
-        print("Culverts computation time:", end - start)
+        print("Culvert computation time:", end - start)
         start = perf_counter_ns()
         self.correctThalwegs()
         end = perf_counter_ns()
-        print("Correction Thalweg time:", end - start)
+        print("Thalweg split time:", end - start)
         start = perf_counter_ns()
-        self.addNewThalwegs(correction=True)
+        self.addNewWatercourses(correction=True)
         end = perf_counter_ns()
         print("New Thalweg computation time:", end - start)
         self.orderThalwegsAroundNodes()
@@ -89,33 +89,39 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         self.instantiateRidgesAtSaddles(divide)
         # erase line property in saddles
         for ipt in self.nodedict:
-            if 'line' in self.nodedict[ipt]:
-                del self.nodedict[ipt]['line']
-        self.instantiateRidgesAtPitsAndConfluencesAndTransfluences()
-        self.traceRidgesT(divide, correction)
-        self.orderRidgesAroundNodesC()
+            if 'criticalline' in self.nodedict[ipt]:
+                del self.nodedict[ipt]['criticalline']
+        self.instantiateRidgesAtPitsAndTJunctions()
+        self.traceRidges(divide, correction)
+        self.correctDivideToRidge()
+        self.orderRidgesAroundNodes()
         end = perf_counter_ns()
         print("Ridge computation time:", end - start)
         start = perf_counter_ns()
         self.computeThalwegDales()
         end = perf_counter_ns()
         print("Dale computation time:", end - start)
-        start = perf_counter_ns()
-        self.flowcomputedict()
-        self.addPuddlesC()
-        self.mergePuddlesAndAssignFlowC()
-        end = perf_counter_ns()
-        print("Flow direction computation time:", end - start)
-        start = perf_counter_ns()
-        # self.flowcomputedict()
-        self.accumulateFlowC()
-        end = perf_counter_ns()
-        print("Flow accumulation computation time:", end - start)
-        start = perf_counter_ns()
-        self.reassignmentnode()
-        end = perf_counter_ns()
-        print("Reassignment nodes time:", end - start)
+        return
+#        self.reassignmentnode()
     
+    def isDownslopeLine(self, cellvalue: "CellType") -> bool:
+        """
+        returns True if the line is a surface watercourse.
+        The method overrides the method that returns True for thalwegs
+
+        Parameters
+        ----------
+        cellvalue : "CellType"
+            A celltype value.
+
+        Returns
+        -------
+        bool
+            True if the cell value is a surface watercourse.
+
+        """
+        return cellvalue & CellType.SURFACE_FLAG and cellvalue & CellType.LINE
+
     def flowcomputedict(self):
         """
         calculates the flow dictionary, including surface flows and flows through culverts
@@ -171,6 +177,45 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
                 self.nodedict[ipt]['fluence'] = 6 ###Other (Peak and RJunction)
         
         
+    def computeCulvertInletsAndOutlets(self, culvert) :
+        """
+        Calculates connection points between thalwegs and culverts 
+
+        Parameters
+        ----------
+        culvert :
+            list of pixelated culverts. Each culvert contains two pixel lines,
+            the pixelated original culvert and the pixelated extended culvert
+            
+        Returns
+        -------
+        node:
+
+        """
+        
+        ponceaux_avec_z = culvert[0]
+        ponceaux_avec_z_prolonges = culvert[1]
+
+        # position inlets and outlets along culverts        
+        entrees_candidates, sorties_candidates = self.InOutCulverts(ponceaux_avec_z, ponceaux_avec_z_prolonges)  ##Calculation of culvert inlets and outlets
+        
+        # remove the z coordinates to inlet and outlet nodes
+        T1 = self.entrees_sorties_sansZ(entrees_candidates, sorties_candidates)
+        entrees_candidatess = T1[0]
+        sorties_candidatess = T1[1]
+
+        # relocate inlets and outlets on thalwegs and watercourse nodes
+        T2 = self.entrees_sorties_finaux(entrees_candidatess, sorties_candidatess, sorties_candidates)
+        inlet = T2[0]
+        outlet = T2[1]
+        
+        # node =  []
+        # for i in range(len(inlet)) :
+        #     node.append(inlet[i])
+        #     node.append(outlet[i])
+        
+        return inlet, outlet
+
     def computeBifurcation(self) :
         """
         Calculates connection points between thalwegs and culverts 
@@ -186,7 +231,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
 
         """
         
-        lignes_ponceaux = self.culvert[0]
+        lignes_ponceaux = self.culvert
         ponceaux = self.terrain.pixelCulverts(lignes_ponceaux)   ##Pixelation of culverts
         ponceaux_avec_z = ponceaux[0]
         ponceaux_avec_z_prolonges = ponceaux[1]
@@ -210,7 +255,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         
         return bifurcations_entrees, bifurcations_sorties, bifurcations
 
-    def addBifurcation(self):
+    def createCulverts(self, inlet, outlet):
         """
         Adds connection points between thalwegs and culverts to the dictionary
         of nodes and assigns them a specific type 
@@ -230,51 +275,75 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         A = self.terrain.dtm
         pixelclass = self.terrain.pixelclass
         
-        self.bifurcationdict = {}  # dictionary of bifurcations
-        bifurcationidx = {}  # dictionary indexing the coordinates of the bifurcations
         
-        B = self.computeBifurcation()
-        bifurcations = B[2]
-        cles = list(self.nodedict.keys())  # retrieve dictionary keys
-        nodekey = cles[-1]    # retrieve the index of the last point in nodedict
+        # self.nodekey contains the index of the next node
+        # self.linekey contains the index of the next line
 
-        count = 0
-        for point in bifurcations :
+        # compute the line of each culvert
+        culvertline = self.newCulverts(inlet, outlet)
+        # avant, L[0] liste des ponceaux, L[1] dictionnaire des ponceaux
+        # maintenant, on ne retourne que la liste
+        
+        for iline, line in enumerate(culvertline):
+            point = inlet[iline] # take the starting point of the culvert
             i = point[0]
             j = point[1]
             z = A[i, j]
         
-            self.bifurcationdict[count] = {
-                'ij': (i, j),
-                'z': z,
-                'thalweg': [],
-                'ridge': [],
-                'culvert': [],
-                'type': df.BIFURCATION
-                }
-            bifurcationidx[i, j] = count
-            if pixelclass[i, j] == df.SADDLE or pixelclass[i, j] == df.PIT or pixelclass[i, j] == df.CONFLUENCE :
-                key = self.nodeidx[(i,j)]   # retrieve the index of this node
-                self.nodedict[key]['culvert'] = []   # add a “culvert” field to that node
-
+            startkey = self.nodekey
+            if (i,j) in self.nodeidx:
+                # modifier le nœud existant
+                startkey = self.nodeidx[(i,j)]   # retrieve the index of this node
+                self.nodedict[startkey]['line'].append(self.linekey)   # add the culvert to the line list
+                self.nodedict[startkey]['type'] = self.nodedict[startkey]['type'] | CellType.CULVERTNODE
             else :
-                
+                # créer un nouveau nœud
+                self.nodeidx[(i,j)] = startkey  # add to nodeidx the following indices at the bifurcations
+
+                # add the culvert to the nodedict
+                self.nodedict[startkey] = {
+                    'ij': (i, j),
+                    'z': z,
+                    'line': [self.linekey], # the only line at this node is the culvert.
+                    'type': CellType.CULVERTNODE
+                }
+                self.nodekey += 1
+            pixelclass[i,j] = pixelclass[i,j] | CellType.CULVERTNODE_FLAG
+                # pixelclass[i, j] = df.BIFURCATION   #The reason why we don't add it in pixelclass is to preserve the fact that it is a thalweg dividing in two
+
+            point = outlet[iline] # take the end point of the culvert
+            i = point[0]
+            j = point[1]
+            z = A[i, j]
+            # créer le ponceau à ajouter dans linedict
+        
+            key = self.nodekey    
+            if (i,j) in self.nodeidx:
+                # modifier le nœud existant
+                key = self.nodeidx[(i,j)]   # retrieve the index of this node
+                self.nodedict[key]['line'].append(-self.linekey) # negative because it is an end node
+                self.nodedict[key]['type'] = self.nodedict[key]['type'] | CellType.CULVERTNODE
+            else :
+                # créer un nouveau nœud
                 self.nodeidx[(i,j)] = self.nodekey  # add to nodeidx the following indices at the bifurcations
 
-                # add the bifurcations to the nodedict
+                # add the culvert to the nodedict
                 self.nodedict[self.nodekey] = {
                     'ij': (i, j),
                     'z': z,
-                    'thalweg': [],
-                    'ridge': [],
-                    'culvert': [],  # Add the “culvert” field here and initialise it with an empty list.
-                    'type': df.BIFURCATION
+                    'line': [-self.linekey], # negative because it is the end node
+                    'type': CellType.CULVERTNODE
                 }
-                self.terrain.pixelclass2[i, j] = df.BIFURCATION   #The reason why we don't add it in pixelclass is to preserve the fact that it is a thalweg dividing in two
-                # increment the index
                 self.nodekey += 1
-            count += 1
-  
+            pixelclass[i,j] = pixelclass[i,j] | CellType.CULVERTNODE_FLAG
+            
+            self.linedict[self.linekey] = {
+                    'start': startkey,
+                    'polyline': line,
+                    'end': key,
+                    'type': CellType.CULVERT
+                }
+            self.linekey += 1
 
     def correctThalwegs(self) :
         """
@@ -293,25 +362,25 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
 
         """
         
-        cles = list(self.thalwegdict.keys())  # retrieve dictionary keys
-        cle = cles[-1]    # retrieve the index of the last point in nodedict
-        nextthalweg = cle + 1  
         
-        for k in self.bifurcationdict:
+        nodedict = self.nodedict
+        culvertnode = [i for i in nodedict if nodedict[i]['type'] & CellType.CULVERTNODE_FLAG]
+        for k in culvertnode:
             
             # retrieve the bifurcations indices
-            i = self.bifurcationdict[k]['ij'][0]
-            j = self.bifurcationdict[k]['ij'][1]
+            node = nodedict[k]
+            i = node['ij'][0]
+            j = node['ij'][1]
             
-            if self.terrain.pixelclass[i,j] == df.THALWEG :
+            if CellType.isThalweg(self.terrain.pixelclass[i,j]):
                 
                 idthalweg = self.floorkey[i,j]
-                endindex = self.nodeidx[(i,j)] 
-                self.nodedict[endindex]['thalweg'].append(-idthalweg)
-                self.nodedict[endindex]['thalweg'].append(nextthalweg)
+                node['line'].append(-idthalweg)
+                node['line'].append(self.linekey)
+                node['type'] = node['type'] | CellType.TJUNCTION
 
                 # split the existing thalweg in two
-                t = self.thalwegdict[idthalweg]
+                t = self.linedict[idthalweg]
                 ptlist = t['polyline']
                 iend = t['end']
                 icfl = ptlist.index((i,j))
@@ -319,27 +388,27 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
                 ptlist2 = ptlist[icfl:]
                 # modify the first thalweg to stop at the confluence
                 t['polyline'] = ptlist1
-                t['end'] = endindex   #bifurcation serait la fin
+                t['end'] = k   # the culvert node is the end of the thalweg
                 # create a new thalweg
-                self.thalwegdict[nextthalweg] = {
-                    'start' : endindex,
+                self.linedict[self.linekey] = {
+                    'start' : k,
                     'polyline' : ptlist2,
                     'end' : iend,
                     'lefthill' : [],
                     'righthill' : [],
+                    'type' : CellType.THALWEG
                 }
                 
                 # we update the node at the end of the new thalweg
-                ndt = self.nodedict[iend]['thalweg']
+                ndt = self.nodedict[iend]['line']
                 ndt.remove(-idthalweg)
-                ndt.append(-nextthalweg)
+                ndt.append(-self.linekey)
                 # we update floorkey with nextthalweg
                 for k in ptlist2[1:-1]:
-                    self.floorkey[k] = nextthalweg
-                nextthalweg += 1
-                self.terrain.pixelclass[i,j] = df.BIFURCATION
+                    self.floorkey[k] = self.linekey
+                self.linekey += 1
+                self.terrain.pixelclass[i,j] = node['type']
 
-    
     def computeCulverts(self) :
         """
         Calculates the new list of culverts with the new entry and exit points
@@ -358,7 +427,6 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         culvertkey = 1
         # floorkey={}
         B = self.computeBifurcation()
-        dict_ponceaux = self.culvert[1]
         b1 = B[0]
         b2 = B[1]
         L = self.newCulverts(b1, b2)
@@ -394,1021 +462,32 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
                 'end' : endindex,
             }
             culvertkey += 1   
-       # for key in self.culvertdict.keys() & dict_ponceaux.keys():
-            #self.culvertdict[key]['diametre'] = dict_ponceaux[key]['DIAMETRE']
         
     
-    def addNewThalwegs(self, correction=True):
+    def addNewWatercourses(self, correction=True):
         
-        bifurcation_nn_conn_th = []
+        culvert = [k for k in self.linedict if self.linedict[k]['type'] & CellType.CULVERT_FLAG]
         
-        for k in self.bifurcationdict:
-            
-            # retrieve the bifurcations indices
-            i = self.bifurcationdict[k]['ij'][0]
-            j = self.bifurcationdict[k]['ij'][1]
-            if self.terrain.pixelclass2[i,j] == df.BIFURCATION:
-                key = self.nodeidx[(i, j)]
-                if not self.nodedict[key]['thalweg'] :
-                    bifurcation_nn_conn_th.append(key+1)
+        endnode = []
+        for ic in culvert:
+            # culvert start node is on a thalweg, no need to add a watercourse
+            # retrieve the end of the culvert
+            inode = self.linedict[ic]['end']
+            if self.nodedict[inode]['line'] == [-ic]:
+                endnode.append(inode)
 
-        print("bifurcation_nn_conn_th = ", bifurcation_nn_conn_th)
-       
-        cles = list(self.nodedict.keys())  # retrieve dictionary keys
-        nodekey = cles[-1]    # retrieve the index of the last point in nodedict
+        print("list of isolated culvert nodes = ", endnode)
         
-        cles = list(self.thalwegdict.keys())  # retrieve dictionary keys
-        cle = cles[-1]    # retrieve the index of the last point in nodedict
-        nextthalwegkey = cle + 1
-        for indice in bifurcation_nn_conn_th:
-            pt = self.nodedict[indice-1]
-            (i,j) = self.nodedict[indice-1]['ij']
+        for ic in culvert:
+            inode = self.linedict[ic]['end']
+            pt = self.nodedict[inode]
+            if not (pt['line'] == [-ic]):
+                continue
+            (i,j) = pt['ij']
             polylist = [(i,j)]
-            keepgoing = True # no node yet
-            outbound = False # not out of the terrain
-            # endindex = -1
-            # check if we are out of the domain or on a node
-            if self.terrain.isInside(i,j):
-                if self.terrain.pixelclass[i,j] == df.SLOPE:
-                    keepgoing = True
-                    self.terrain.pixelclass[i,j] = df.THALWEG
-                    self.floorkey[i,j] = nextthalwegkey
-                else:
-                    keepgoing = False
-            else:
-                keepgoing = False
-                outbound = True # we’ll connect the thalweg to the virtual pit
-            # if not a node and inbound, we look for the next point
-            self.terrain.pixelclass[i,j] = df.BIFURCATION ##ADDED 20231202
-            oldlag = 0
-            oldldr = (0,0)
-            while keepgoing:
-                ldr = self.terrain.neighbour[i,j]
-                v = self.terrain.getNeighbourHeights(i, j)
-                z = self.terrain.dtm[i,j]
-            
-                # gradient computation
-                # gradLength does not compute the gradient for each triangle
-                # but the dz for each node along an edge and 3/2dz for each
-                # node along a diagonal
-                dz = df.gradLength(z, v, ldr)
-                minimum = 1
-                kmin = -1
-                for k,value in enumerate(dz):
-                    if value<minimum:
-                        minimum=value
-                        kmin=k
-                    elif value==minimum:
-                        if df.lexicoSign(ldr[k][0]-ldr[kmin][0], ldr[k][1]-ldr[kmin][1])<0:
-                            minimum=value
-                            kmin=k
-            
-                # the steepest downward gradient is for v[kmin]
-                # we check if we need to modify it according to the lag
-                
-                ########### beginning of the correction block #############
-                if correction:            
-                    # there are two possible triangles, one on each side of the edge
-                    # we first check in which triangle the gradient is
-                    lag = 0
-                    vleft = 0
-                    vright = 0
-                    kleft = kmin - 1
-                    kright = kmin + 1
-                    if kright == len(ldr):
-                        kright = 0
-                    # cases where the diagonal does not connect to the node z
-                    if abs(ldr[kmin][0]-ldr[kleft][0])+abs(ldr[kmin][1]-ldr[kleft][1]) == 1:
-                        vleft = v[kleft] - z
-                    if abs(ldr[kmin][0]-ldr[kright][0])+abs(ldr[kmin][1]-ldr[kright][1]) == 1:
-                        vright = v[kright] - z
-            
-                    if vleft == vright or min(vleft, vright) >= 0: # no lag, it goes along ldr[kmin]
-                        lag = 0
-                    else: # either to the left or the right triangle
-                        k1 = kmin
-                        if vleft < vright: # if the left point is lower, gradient is on the left
-                            k1 = kleft
-                            v1 = vleft
-                        if vright < vleft:
-                            k1 = kright
-                            v1 = vright
-                        # here we compute the gradient direction by solving a 2x2 system
-                        # may be simplified noting that one coefficient is zero, others are ones
-                        # but would need to separate all cases
-                        x1 = ldr[kmin][0]
-                        y1 = ldr[kmin][1]
-                        x2 = ldr[k1][0]
-                        y2 = ldr[k1][1]
-                        z1 = v[kmin] - z
-                        z2 = v1
-                        det = 1/(x1*y2 - x2*y1)
-                        a = det*(y2*z1 - y1*z2)
-                        b = det*(x1*z2 - x2*z1)
-                        # the gradient direction is given by (a,b)
-                        # now we compute the lag
-                        # the lag is the difference between ldr[kmin] and (a,b)
-                        if (ldr[kmin][0] == ldr[k1][0]): # compute b for a = 1
-                            b = -b/a
-                            a = ldr[kmin][0]
-                            if abs(b) < abs(a):
-                                lag = b - ldr[kmin][1]
-                            else:
-                                lag = 0
-                        else:
-                            a = -a/b
-                            b = ldr[kmin][1]
-                            if abs(a) < abs(b):
-                                lag = a - ldr[kmin][0]
-                            else: lag = 0
-                        # if we keep going the same way, correct with the lag
-                        if (ldr[kmin] == oldldr):
-                            lag += oldlag
-                            if lag > 0.5:
-                                kmin = k1
-                                lag -= 1
-                            if lag < -0.5:
-                                kmin = k1
-                                lag += 1
-                        oldldr = ldr[kmin]
-                        oldlag = lag
-                ############# end of the correction block #################
-                
-                i += ldr[kmin][0]
-                j += ldr[kmin][1]
-               
-                # check again if the point is a node or out
-                if self.terrain.isInside(i,j):
-                    if self.terrain.pixelclass[i,j] == df.SLOPE:
-                        keepgoing = True
-                        self.terrain.pixelclass[i,j] = df.THALWEG
-                        self.floorkey[i,j] = nextthalwegkey
-                    else:
-                        keepgoing = False
-                        outbound = False
-                else:
-                    keepgoing = False
-                    outbound = True
-                    
-                # this point is on the thalweg and is added to the polyline
-                polylist.append((i,j))
-            
-            # if we reach a node
-            # the thalweg id is marked <0 at its end point
-            if outbound:
-                z=self.terrain.nodata
-                self.nodeidx[(i,j)] = -1 # virtual pit
-                self.nodedict[-1]['ij'].append((i,j))
-                endindex = -1
-            
-            else:
-                if self.terrain.pixelclass[i,j] == df.THALWEG:
-                    # if we reach an existing thalweg, we have to create a confluence
-                    idthalweg = self.floorkey[i,j]
-                    # we create the new node
-                    endindex = self.nodekey
-                    self.nodeidx[(i,j)] = self.nodekey
-                    # endindex = nodekey + 1
-                    # self.nodeidx[(i,j)] = endindex
-                    self.nodedict[self.nodeidx[(i,j)]] = {
-                        'ij' : (i,j),
-                        'z': self.terrain.dtm[i,j],
-                        'thalweg' : [-idthalweg, nextthalwegkey],
-                        'ridge' : [],
-                        'type' : df.CONFLUENCE
-                    }
-                    self.terrain.pixelclass[i,j] = df.CONFLUENCE
-                    self.nodekey += 1
-                    # split the existing thalweg in two
-                    t = self.thalwegdict[idthalweg]
-                    ptlist = t['polyline']
-                    iend = t['end']
-                    icfl = ptlist.index((i,j))
-                    ptlist1 = ptlist[:icfl+1]
-                    ptlist2 = ptlist[icfl:]
-                    # modify the first thalweg to stop at the confluence
-                    t['polyline'] = ptlist1
-                    t['end'] = endindex
-                    # create a new thalweg
-                    self.thalwegdict[nextthalwegkey] = {
-                        'start' : endindex,
-                        'polyline' : ptlist2,
-                        'end' : iend,
-                        'lefthill' : [],
-                        'righthill' : [],
-                    }
-                    # we update the node at the end of the new thalweg
-                    ndt = self.nodedict[iend]['thalweg']
-                    ndt.remove(-idthalweg)
-                    ndt.append(-nextthalwegkey)
-                    # we update floorkey with nextthalweg
-                    for k in ptlist2[1:-1]:
-                        self.floorkey[k] = nextthalwegkey
-                    nextthalwegkey += 1
-            # this can be simplified, all non thalweg cases are treated the same way
-                elif self.terrain.pixelclass[i,j] == df.CONFLUENCE: 
-                    # reach a confluence: add the thalweg to the confluence
-                    endindex = self.nodeidx[(i,j)]
-                elif self.terrain.pixelclass[i,j] == df.SADDLE:
-                    endindex = self.nodeidx[(i,j)]
-                elif self.terrain.pixelclass[i,j] == df.PIT:
-                    endindex = self.nodeidx[(i,j)]
-            
-            # the last point is a critical point
-            # we add its index to the thalweglist
-            pt['thalweg'].append(nextthalwegkey)
-            self.nodedict[endindex]['thalweg'].append(-nextthalwegkey)
-            self.thalwegdict[nextthalwegkey]={
-                'start' : indice-1,
-                'polyline' : polylist,
-                'end' : endindex,
-                'lefthill' : [],
-                'righthill' : [],
-            }
-            nextthalwegkey += 1
-            
-    def getThalwegNeighbourNodesC(self, ipt):
-        """
-        Returns nodes connected to this node through the thalwegs. Two sets are
-        returned: one containing higher neighbours and one containing lower neighbours.
+            self.traceLineDown(inode, polylist, correction, CellType.SURFACE)
+            pt['type'] |= CellType.TJUNCTION_FLAG
 
-        ipt: key of a node defined in nodedict
-        
-        Returns
-        -------
-        (lowerneighbour, higherneighbour): two sets containing all neighbouring node ids.
-
-        """
-        pt = self.nodedict[ipt]
-        higherneighbour = set()
-        lowerneighbour = set()
-        for it in pt['thalweg']:
-            if it > 0:
-                lowerneighbour.add(self.thalwegdict[it]['end'])
-            else:
-                higherneighbour.add(self.thalwegdict[-it]['start'])
-        if 'culvert' in pt:
-            for it in pt['culvert'] :
-                if it > 0 and it is not None :
-                    lowerneighbour.add(self.culvertdict[it]['end'])
-                elif it is not None:
-                    higherneighbour.add(self.culvertdict[-it]['start']) 
-            
-        return lowerneighbour, higherneighbour
-    
-    def accumulateFlowC(self):
-        """
-        computes the flow accumulation at the mouth of each thalweg. The flow
-        accumulation is defined by the area of all dales upstream of the mouth.
-        If a node has severalboolean downstream thalwegs, the accumulation can be sent
-        to the thalwegs in proportion of the slope or to only one thalweg.
-
-        Parameters
-        ----------
-        sd : 
-            True if the network does not have diffluences (single direction).
-            In that case, all the flow follows the steepest slope.
-            Otherwise, the flow to each thalweg depends on the slope
-
-        Returns
-        -------
-        None.
-
-        """
-        sd = self.singleflowdirection
-        visited = {}
-        for it in self.flowdict:
-            t = self.flowdict[it]
-            idale = t['dale']
-            visited[it] = len(self.upstreamThalwegsC(self.fromNodeC(it)))
-            if idale != -1 and idale != -999:
-                t['accumulation'] = self.daledict[idale]['area']
-            else:
-                t['accumulation'] = 0
-
-        streamlist = [self.downstreamThalwegsC(ipt) for ipt in self.nodedict if self.isSpringC(ipt)]
-        thalweglist = [it for sublist in streamlist for it in sublist]
-        for ist in thalweglist:
-            stack = [ist]
-            while stack:
-                it = stack.pop()
-                inode = self.toNodeC(it)
-                downstream = self.downstreamThalwegsC(inode)
-                if downstream:
-                    n = len(downstream)
-                    slopelist = [min(0, self.computeStreamSlopeC(idt))
-                                 for idt in downstream]
-                    if df.NOTIN in slopelist:
-                        for i in range(n):
-                            if slopelist[i] != df.NOTIN:
-                                slopelist[i] = 0
-                    accu = [0]*n
-                    accutot = self.flowdict[it]['accumulation']
-                    if sd:
-                        maxslope = min(slopelist)
-                        imax = slopelist.index(maxslope)
-                        for i in range(n):
-                            lt = downstream[i]
-                            if self.flowdict[lt]['type'] == 'thalweg':
-                                nd = self.flowdict[lt]['start']
-                                
-                            if self.flowdict[lt]['type'] == 'culvert':
-                                accu[i] = accutot
-                            # elif i == imax and 'culvert' not in self.nodedict[nd]:
-                            elif i == imax :
-                                accu[imax] = accutot
-                            else:
-                                accu[i] = 0
-                                jt = downstream[i]
-                                self.flowdict[jt]['headwater'] = True
-                    for i in range(n):
-                        idt = downstream[i]
-                        self.flowdict[idt]['accumulation'] += accu[i]
-                        visited[idt] -= 1
-                        if visited[idt] == 0:
-                            stack.append(idt)
-                            
-    def instantiateRidgesAtPitsAndConfluencesAndTransfluences(self):
-        """
-        Instantiates ridge objects between two thalwegs at pits of degree three
-        or more. 
-
-        Returns
-        -------
-        None.
-
-        """
-        # key for new ridges
-        ridgestart = max(self.ridgedict) + 1  # REMARQUE
-        ridgekey = ridgestart
-        divideside = {}
-
-        # we check z>nodata to avoid starting a ridge in a hole
-        # we start ridges between two consecutive thalwegs from pits and confluences
-        # pits with one thalweg are excluded
-#        pitlist = [i for i in self.nodedict \
-#                   if ((self.nodedict[i]['type'] == df.PIT and len(self.nodedict[i]['thalweg'])>1)\
-#                   or self.nodedict[i]['type'] == df.CONFLUENCE) and self.nodedict[i]['z']>self.terrain.nodata]
-        pitlist = [i for i in self.nodedict if (self.nodedict[i]['type'] == df.PIT and i != -1) or
-                    self.nodedict[i]['type'] == df.CONFLUENCE or self.nodedict[i]['type'] == df.BIFURCATION]  # ADDDDD BIFURCATION
-       
-
-        for ipt in pitlist:
-            # if ipt!=testipt:
-            #    continue
-            pt = self.nodedict[ipt]
-
-            # we get the list of thalwegs
-            thalweglist = pt['thalweg']
-            #print('Node ', ipt, thalweglist)
-
-            (i, j) = pt['ij']
-            # orderedneighbours is the neighbours of (i,j) in clockwise order
-            orderedneighbours = [(i+di, j+dj)
-                                 for (di, dj) in self.terrain.neighbour[i, j]]
-            # for each thalweg, we start a ridge on its right
-            for it, t in enumerate(thalweglist):
-                #print('thalweg', it, t)
-                # at a pit, thalweg ids are all negative
-                if t > 0:
-                    ihill = self.thalwegdict[t]['righthill']
-                else:
-                    ihill = self.thalwegdict[-t]['lefthill']
-                hill = self.hilldict[ihill]
-
-                thalwegline = hill['dangling']
-
-                nt = len(thalweglist)-1
-                # tright is the next thalweg in the list
-                # because the list is in clockwise order, it is the thalweg on the right
-                if it == nt:
-                    tright = thalweglist[0]
-                else:
-                    tright = thalweglist[it+1]
-                # pleft and pright are coordinates of thalwegs' second points
-                if t > 0:
-                    pleft = self.thalwegdict[t]['polyline'][1]
-                else:
-                    pleft = self.thalwegdict[-t]['polyline'][-2]
-                if tright > 0:
-                    pright = self.thalwegdict[tright]['polyline'][1]
-                else:
-                    pright = self.thalwegdict[-tright]['polyline'][-2]
-                # ileft and iright are the neighbour pixels where the thalwegs pass through
-                ileft = orderedneighbours.index(pleft)
-                iright = orderedneighbours.index(pright)
-                #print('tleft, tright', t, tright, ihill)
-                #print('ileft, iright', ileft, iright)
-                # slopeneighbours is the list of pixels between the thalwegs
-                slopeneighbours = []
-                if ileft > iright:
-                    slopeneighbours = orderedneighbours[ileft:] + \
-                        orderedneighbours[:iright+1]
-                elif nt > 0:
-                    slopeneighbours = orderedneighbours[ileft:iright+1]
-                else:
-                    slopeneighbours = orderedneighbours[ileft:] + \
-                        orderedneighbours[:iright]
-                slopeneighbours = [
-                    v for v in slopeneighbours if self.terrain.isInside(v[0], v[1])]
-                # the ridge in this hill must go through one of these pixels
-
-                # take the steepest slope in pixels of slopeneighbours
-                z = self.terrain.dtm[i, j]
-                slope = [2*(self.terrain.dtm[v] - z)/(abs(v[0] - i) +
-                                                      abs(v[1] - j) + 1) for v in slopeneighbours]
-                maxslope = max(slope)
-                maxcount = slope.count(maxslope)
-                point = None
-                if maxcount > 1:
-                    maxcandidates = [slopeneighbours[i]
-                                     for i in range(len(slope)) if slope[i] == maxslope]
-                    maxcandidates.sort(
-                        key=lambda x: df.order8.index((x[0]-i, x[1]-j)))
-                    point = maxcandidates[-1]
-                else:
-                    maxpos = slope.index(maxslope)
-                    point = slopeneighbours[maxpos]
-                polylist = [(i, j), point]
-                #print('create new ridge', ipt, t, tright, slopeneighbours[maxpos])
-
-                # if the ridge overlaps a dangling thalweg, the side of the thalweg must be recorded
-                if pleft == polylist[1] and -t in thalwegline:
-                    divideside[ridgekey] = -1
-                if pright == polylist[1] and -tright in thalwegline:
-                    divideside[ridgekey] = 1
-
-                self.addNewRidge(ridgekey, ihill, ipt, polylist)
-                ridgekey += 1
-
-        # deal with ridges starting at the virtual pit
-        ipt = -1
-        pt = self.nodedict[ipt]
-        thalweglist = pt['thalweg']
-        # orderedneighbours is the neighbours of (i,j) in clockwise order
-        innerneighbours = self.terrain.inbound
-        outerneighbours = self.terrain.boundary
-        # for each thalweg, we start a ridge on its right
-        for it, t in enumerate(thalweglist):
-            #print('thalweg', it, t)
-            # at a pit, thalweg ids are all negative
-            ihill = self.thalwegdict[-t]['lefthill']
-            hill = self.hilldict[ihill]
-
-            thalwegline = hill['dangling']
-
-            nt = len(thalweglist)-1
-            # tright is the next thalweg in the list
-            # around the virtual pit, the order is reversed
-            if it == nt:
-                tleft = thalweglist[0]
-            else:
-                tleft = thalweglist[it+1]
-            # pleft and pright are coordinates of thalwegs' second points
-            pright = self.thalwegdict[-t]['polyline'][-2]
-            pleft = self.thalwegdict[-tleft]['polyline'][-2]
-            # ileft and iright are the neighbour pixels where the thalwegs pass through
-            iright = innerneighbours.index(pright)
-            if pright == pleft:
-                ileft = len(innerneighbours) - 1 - \
-                    innerneighbours[::-1].index(pleft)
-            else:
-                ileft = innerneighbours.index(pleft)
-            #print('tleft, tright', t, tright, ihill)
-            #print('ileft, iright', ileft, iright)
-            # slopeneighbours is the list of pixels between the thalwegs
-            slopeneighbours = []
-            if ileft >= iright:
-                slopeneighbours = innerneighbours[ileft:iright-1:-1]
-            else:
-                slopeneighbours = innerneighbours[iright:] + \
-                    innerneighbours[:ileft+1]
-            # the ridge in this hill must go through one of these pixels
-            if (slopeneighbours[0] in slopeneighbours[1:]):
-                start = slopeneighbours[1:].index(slopeneighbours[0])
-                slopeneighbours = slopeneighbours[start:]
-            if (slopeneighbours[-1] in slopeneighbours[:-1]):
-                end = slopeneighbours[:-1].index(slopeneighbours[-1])+1
-                slopeneighbours = slopeneighbours[:end]
-            # take the max z in pixels of slopeneighbours
-            slope = [self.terrain.dtm[v[0], v[1]] for v in slopeneighbours]
-            maxslope = max(slope)
-            maxpos = slope.index(maxslope)
-            point = slopeneighbours[maxpos]
-            (i, j) = point
-
-            # get the first pixel outside the domain
-            qleft = self.thalwegdict[-tleft]['polyline'][-1]
-            qright = self.thalwegdict[-t]['polyline'][-1]
-            ileft = outerneighbours.index(qleft)
-            iright = outerneighbours.index(qright)
-            slopeneighbours = []
-            if ileft > iright:
-                slopeneighbours = outerneighbours[ileft:iright-1:-1]
-            else:
-                slopeneighbours = outerneighbours[iright:] + \
-                    outerneighbours[:ileft+1]
-            distance = [(pt[0]-i)**2+(pt[1]-j)**2 for pt in slopeneighbours]
-            mindistance = min(distance)
-            argdist = distance.index(mindistance)
-            if pright == pleft:
-                argdist = len(distance) - 1 - distance[::-1].index(mindistance)
-            firstpoint = slopeneighbours[argdist]
-            polylist = [firstpoint, point]
-            #print('create new ridge', ipt, t, tright, slopeneighbours[maxpos])
-
-            # if the ridge overlaps a dangling thalweg, the side of the thalweg must be recorded
-            if pright == polylist[1] and -t in thalwegline:
-                divideside[ridgekey] = -1
-            if pleft == polylist[1] and -tleft in thalwegline:
-                divideside[ridgekey] = 1
-
-            self.addNewRidge(ridgekey, ihill, ipt, polylist)
-            ridgekey += 1
-
-        for ir in divideside:
-            self.ridgedict[ir]['startside'] = divideside[ir]
-
-    def traceRidgesT(self, divide = False, correction = True):
-        """
-        Computation of ridges starting from saddles. Ridges do not overlap or
-        go through saddles. If two ridges join, a junction is inserted and a
-        new ridge runs from the junction to the next node. The computation is 
-        done in a similar way as for thalwegs and gradients are also constrained 
-        to vertices with a correction of the offset. The difference is that a
-        ridge must always remain within a polygon formed by its surrounding 
-        thalwegs to avoid any thalweg-ridge crossing.
-
-        Parameter
-        ---------
-        divide : Boolean
-            Indicates if ridges have to be extracted in view of watershed computation
-            If false, ridges do not stop at confluences. 
-            If true, ridges are still computed the same way but intersections with
-            confluences are recorded and ridges are split at confluences. 
-        correction : boolean
-            True if a correction is done to stay closer to the gradient
-            False if the descent direction is not corrected as in D8
-        Returns
-        -------
-        None.
-
-        """
-
-        # key for new ridges        
-        nextridge = max(self.ridgedict) + 1
-        # hill polygons and map of dangling thalwegs
-        hillpolygon, danglingmap = self.createHillPolygons()
-        
-        pixelclass = self.terrain.pixelclass
-        pixelclass2 = self.terrain.pixelclass2
-        
-
-#        testir = [10363]
-        for ihill in self.hilldict:
-            floorkey={} # coordinate index recording ridge id
-            junctionidx = {} # coordinate index to junctions
-            ridgeindangling = {} # coordinate index for ridges on a dangling thalweg
-            # for each coordinate, records the ridge id and the side of the thalweg to check
-            # if another rige comes there, a junction should be inserted            junctionidx = {} # coordinate index to junctions
-            ridgeindangling = {} # coordinate index for ridges on a dangling thalweg
-
-            
-            if ihill % 1000 == 0:
-                print(ihill, end=" ")
-            hill = self.hilldict[ihill]
-            ridgelist = hill['ridge'][:]
-            for ir in ridgelist:
-#                if ir not in testir:
-#                    continue
-                r = self.ridgedict[ir]
-                polylist = r['polyline']
-                ipt = r['start']
-                #pt = self.nodedict[ir]
-                # computes a hill starting from t at ipt
-                #thalwegring, thalwegline = self.getThalwegRing(ipt, t)
-                
-                # in regular cases, thalwegline is empty and thalwegring contains only one ring, the boundary,
-                # and the ring goes clockwise
-                
-                # if there are several rings, the biggest one is the boundary, others are holes
-                
-                # singular case: a node has two thalwegs that yield the same ring in different directions
-                # this case can occur for two thalwegs from a pass connecting the same pit
-                
-                # create the shapely polygon from the hill
-                plgn = hillpolygon[ihill]
-                
-                (i,j) = polylist[1]
-                dtoverlap = danglingmap[i,j] # thalweg id on which the ridge is
-                # print("id id thalweg :", dtoverlap)
-                thalwegside = 0 # -1/0/1 if left/undefined/right side
-                # on which side of the dangling line we come from
-                if dtoverlap > 0:
-                    if divide and 'startside' in self.ridgedict[ir]: 
-                        thalwegside = self.ridgedict[ir]['startside']
-                    else:
-                        tmppoly = self.thalwegdict[dtoverlap]['polyline']
-                        kt = tmppoly.index((i,j))
-                        if kt == 0:
-                            #print('kt = 0, thalweg', dtoverlap, 'ridge', ir)
-                            thalwegside = 0
-                        else:
-                            thalwegside = df.sideOfLine(tmppoly, kt, polylist[0])
-                danglingconfluence = False
-                confluencewedge = ()
-
-                keepgoing = True # false once a critical point is reached
-                #outbound = False # true if out of bound (obsolete)
-                junction = False # true if a new junction point to be created
-                okjoin = True # false if the ridge reaches another ridge on the other side of the thalweg
-                endindex = -1
-                
-                nextrounds = False # only for the first round
-                validridge = True # false if an exception occured in ascent computation
-                
-                oldlag = 0
-                oldldr = (0,0)
-                oldij = (i,j)
-                while keepgoing:
-                    if nextrounds:
-                        ldr = self.terrain.neighbour[i,j]
-                        v = self.terrain.getNeighbourHeights(i, j)
-                        z = self.terrain.dtm[i,j]
-    
-                        #print(plgn)                    
-                        [validridge, kmax, inlist] = self.computeAscent(i, j, v, z, ldr, plgn, danglingconfluence, confluencewedge, thalwegside, dtoverlap, danglingmap)
-
-                        if not validridge:
-                            print('validridge', ir, ihill)
-                            exit(0)
-                        oldij = (i,j) # used later to check sides
-                        
-                        # the steepest gradient is for v[kmax]
-                        # we check if we need to modify it according to the lag
-                        if correction:
-                            [oldldr, oldlag] = self.correctAscent(v, z, kmax, ldr, inlist, oldldr, oldlag) 
-                        else:
-                            oldldr = ldr[kmax]
-                        i += oldldr[0]
-                        j += oldldr[1]
-                        # if (i,j) in polylist:
-                        #     print(i, j, "we're turning back")
-                        #     print(ipt, ir, ihill, polylist)
-                        #     polylist = polylist[:polylist.index((i,j))]
-                        #     validridge = False
-                        #     break
-                        polylist.append((i,j))
-
-                    nextrounds = True                    
-                    # check dangling thalwegs
-                    okjoin = True
-                    danglingconfluence = False
-                    oldoverlap = dtoverlap
-                    dtoverlap = danglingmap[i,j]
-                    # no dangling thalweg under this pixel
-                    if dtoverlap <= 0:
-                        # if we reach a confluence
-                        if pixelclass[i,j] == df.CONFLUENCE or pixelclass2[i,j] == df.BIFURCATION :
-                            iconf = self.nodeidx[(i,j)]
-                            confthalweg = self.nodedict[iconf]['thalweg']
-                            # check if first node of dangling thalweg
-                            lthalweg = [-t for t in confthalweg if -t in hill['dangling']]
-                            if lthalweg:
-                                oldtlwg = [t for t in confthalweg if t > 0][0]
-                                if len(lthalweg) > 1:
-                                    print("trouble ahead: more than one dangling thalwegs", lthalweg)
-                                dtoverlap = lthalweg[0]
-                                otherthalweg = [-t for t in confthalweg if t < 0 and -t != dtoverlap][0]
-                                p3 = self.thalwegdict[oldtlwg]['polyline'][1]
-                                p2 = self.thalwegdict[dtoverlap]['polyline'][-2]
-                                p1 = self.thalwegdict[otherthalweg]['polyline'][-2]
-                                confluencewedge = (p3, (i,j), p2)
-                                danglingconfluence = True
-                                thalwegside = -df.sideOfWedge(confluencewedge, p1)
-                                #print(ir, confluencewedge, p1, thalwegside)
-                        else:
-                            thalwegside = 0 # we are no longer on a thalweg
-                    # if we are on a dangling thalweg
-                    else:
-                        # if it is a confluence (that's the last pixel of the thalweg)
-                        if pixelclass[i,j] == df.CONFLUENCE or pixelclass2[i,j] == df.BIFURCATION :
-                            iconf = self.nodeidx[(i,j)]
-                            lthalweg = self.nodedict[iconf]['thalweg']
-                            ithalweg = lthalweg.index(dtoverlap)
-                            it1 = df.getSecondPointPosition(lthalweg[ithalweg])
-                            p1 = self.thalwegdict[dtoverlap]['polyline'][it1]
-                            # if we don't know on which side to stay
-                            if thalwegside == 0:
-                                jthalweg = ithalweg - 1
-                                kthalweg = ithalweg + 1
-                                if kthalweg == len(lthalweg):
-                                    kthalweg = 0
-                                it2 = df.getSecondPointPosition(lthalweg[jthalweg])
-                                it3 = df.getSecondPointPosition(lthalweg[kthalweg])
-                                p2 = self.thalwegdict[abs(lthalweg[jthalweg])]['polyline'][it2]
-                                p3 = self.thalwegdict[abs(lthalweg[kthalweg])]['polyline'][it3]
-                                # ajout 7/9/22
-                                p4 = polylist[-2]
-                                wedge2 = (p1, (i,j), p2)
-                                wedge3 = (p1, (i,j), p3)
-                                side23 = df.sideOfWedge(wedge2, p3)
-                                side24 = df.sideOfWedge(wedge2, p4)
-                                side32 = df.sideOfWedge(wedge3, p2)
-                                side34 = df.sideOfWedge(wedge3, p4)
-                                side2 = side23 * side24
-                                side3 = side32 * side34
-                                if side2 < 0:
-                                    confluencewedge = wedge2
-                                    thalwegside = side24
-                                elif side3 < 0:
-                                    confluencewedge = wedge3
-                                    thalwegside = side34
-                                elif side3 > 0:
-                                    confluencewedge = wedge2
-                                    thalwegside = side24
-                                elif side2 > 0:
-                                    confluencewedge = wedge3
-                                    thalwegside = side34
-                                # remplace
-                                #thalwegside = df.sideOfWedge(confluencewedge, p1)
-                                # fin ajout 7/9/22
-                            # if we know on which side to stay
-                            else:
-                                jthalweg = ithalweg + thalwegside
-                                if jthalweg == len(lthalweg):
-                                    jthalweg = 0
-                                kthalweg = ithalweg - thalwegside
-                                if kthalweg == len(lthalweg):
-                                    kthalweg = 0
-                                it2 = df.getSecondPointPosition(lthalweg[jthalweg])
-                                it3 = df.getSecondPointPosition(lthalweg[kthalweg])
-                                p2 = self.thalwegdict[abs(lthalweg[jthalweg])]['polyline'][it2]
-                                p3 = self.thalwegdict[abs(lthalweg[kthalweg])]['polyline'][it3]
-                                confluencewedge = (p1,(i,j),p2)
-                                side23 = df.sideOfWedge(confluencewedge, p3)
-                                thalwegside = -side23
-                                dtoverlap = lthalweg[jthalweg]
-                            danglingconfluence = True
-                        # if we are not at a confluence (regular thalweg pixel)
-                        else:
-                            # correction 8/9/22
-                            if oldoverlap > 0 and dtoverlap != oldoverlap and pixelclass[i,j] != df.SADDLE :
-                                tmppoly = self.thalwegdict[dtoverlap]['polyline']
-                                kt = tmppoly.index((i,j))
-                                if kt != 0:
-                                    thalwegside = df.sideOfLine(tmppoly, kt, oldij)
-                                else:
-                                    thalwegside = 0
-                            # fin correction
-                            # if we don't know on which side to stay, find it out
-                            if thalwegside == 0:
-                                tmppoly = self.thalwegdict[dtoverlap]['polyline']
-                                kt = tmppoly.index((i,j))
-                                if kt != 0:
-                                    #print("ça va planter", kt, i,j, ir, dtoverlap, oldij)
-                                    thalwegside = df.sideOfLine(tmppoly, kt, oldij)
-                            # if there is already a ridge here
-                            if (i,j) in floorkey:
-                                #if len(ridgeindangling[(i,j)]) > 1:
-                                    #print("Check this (more than one ridge)", ipt, ir, i, j, ridgeindangling[(i,j)])
-                                jnctn = [rd[1] for rd in ridgeindangling[(i,j)]]
-                                if not thalwegside in jnctn:
-                                    okjoin = False
-                                #elif -thalwegside in jnctn:
-                                #    print(i,j, ir, thalwegside, ridgeindangling[(i,j)])
-                                ridgeindangling[(i,j)].append((ir, thalwegside))
-                            else:
-                                ridgeindangling[(i,j)] = [(ir, thalwegside)]
-                            
-                    # check if the point is a node or out (it should not happen)
-                    if not self.terrain.isInside(i,j):
-                        keepgoing = False
-                        #outbound = True
-                        print("we're out")
-                        
-                    # check what kind of pixel we reach and whether we keep going
-                    if pixelclass[i,j] == df.SLOPE:
-                        # nothing special, keep going
-                        keepgoing = True
-                        pixelclass[i,j] = df.RIDGE
-                        floorkey[i,j] = ir
-                    # if divide is false (default) confluences are not considered 
-                    # as end points since ridges only start from saddles
-                    # if divide is true, ridges can start and end at confluences
-                    # elif pixelclass[i,j] == df.THALWEG or (pixelclass[i,j] == df.CONFLUENCE and not divide) or (pixelclass[i,j] == df.BIFURCATION and not divide):
-                    elif pixelclass[i,j] == df.THALWEG or (pixelclass[i,j] == df.CONFLUENCE and not divide) or (pixelclass2[i,j] == df.BIFURCATION and not divide):
-                        if (i,j) in floorkey: # we reach a ridge
-                            if not okjoin:
-                                junction = False
-                                keepgoing = True
-                                floorkey[i,j] = ir
-                            else:
-                                if (i,j) not in junctionidx: # we need to create a junction
-                                    junction = True
-                                keepgoing = False
-                        else:
-                            keepgoing = True
-                            floorkey[i,j] = ir
-                    elif (divide and pixelclass[i,j] == df.CONFLUENCE) or (divide and pixelclass2[i,j] == df.BIFURCATION) :
-                    # elif divide and pixelclass[i,j] == df.CONFLUENCE :
-                        if (i,j) in floorkey:
-                            junction = False
-                            keepgoing = False
-                            if dtoverlap > 0:
-                                if (i,j) in ridgeindangling:
-                                    ridgeindangling[(i,j)].append((ir, thalwegside))
-                                else:
-                                    ridgeindangling[(i,j)] = [(ir, thalwegside)]
-                        else:
-                            floorkey[i,j] = ir
-                            if dtoverlap > 0:
-                                ridgeindangling[(i,j)] = [(ir, thalwegside)]
-                            keepgoing = False
-                            junction = False
-                    elif pixelclass[i,j] == df.RIDGE:
-                        keepgoing = False
-                        junction = True
-                    else: # ridge terminates at a saddle or peak
-                        keepgoing = False
-                        #outbound = False
-                # end of while loop reached when keepgoing is false
-            
-            
-                if validridge:
-#                    idend = -1
-#                    if pixelclass[i,j] == CONFLUENCE:
-#                        print('Ridge reached a confluence', ipt, ridgekey, i,j)
-                    if junction:                    
-                        # if we reach an existing ridge, we have to create a junction
-                        idridge = floorkey[i,j]
-                        if (i,j) in ridgeindangling:
-                            idridge = [rd[0] for rd in ridgeindangling[(i,j)] if rd[1] == thalwegside][0]
-                            #print('idridge = ', idridge, ir, ridgeindangling[(i,j)])
-                        # we create the new node
-                        endindex = self.nodekey
-                        self.nodeidx[(i,j)] = self.nodekey
-                        junctionidx[(i,j)] = self.nodekey
-                        self.nodedict[self.nodekey] = {
-                            'ij' : (i,j),
-                            'z': self.terrain.dtm[i,j],
-                            'thalweg' : [],
-#                            'ridge' : [-idridge, nextridge],
-                            'ridge' : [-idridge],
-                            'type' : df.JUNCTION
-                        }
-                        #print(endindex, ir, idridge, nextridge, self.nodedict[endindex])
-                        if pixelclass[i,j] == df.RIDGE:
-                            pixelclass[i,j] = df.JUNCTION
-                        self.nodekey += 1
-                        # split the existing ridge in two
-                        r = self.ridgedict[idridge]
-                        ptlist = r['polyline']
-                        iend = r['end']
-                        try:
-                            icfl = ptlist.index((i,j)) # point where we split
-                        except ValueError:
-                            print('in createRidges ptlist.index', ipt, ir, idridge, ihill)
-                            print('polylist', polylist)
-                            print('ij', i, j, r)
-                            break
-                        ptlist1 = ptlist[:icfl+1]
-                        ptlist2 = ptlist[icfl:]
-                        # modify the first ridge to stop at the junction
-                        r['polyline'] = ptlist1
-                        r['end'] = endindex
-                        # create a new ridge
-                        self.addNewRidge(nextridge, ihill, endindex, ptlist2)
-                        #self.nodedict[endindex]['ridge'].append(nextridge)
-                        self.ridgedict[nextridge]['end'] = iend
-                        #if thalwegside:
-                            #self.ridgedict[nextridge]['endside'] = thalwegside
-                        if 'endside' in r:
-                            self.ridgedict[nextridge]['endside'] = r['endside']
-                        
-                        # we update the node at the end of the new ridge
-                        ndt = self.nodedict[iend]['ridge']
-                        ndt.remove(-idridge)
-                        ndt.append(-nextridge)
-                        # we update floorkey with nextridge
-                        
-                        for k in ptlist2[1:-1]:
-                            floorkey[k] = nextridge
-                            if k in ridgeindangling:
-                                pos = [i for i, x in enumerate(ridgeindangling[k]) if x[0] == idridge][0]
-                                tmp = ridgeindangling[k][pos][1]
-                                del ridgeindangling[k][pos]
-                                ridgeindangling[k].append((nextridge, tmp))
-                        nextridge += 1
-                    else:
-                        endindex = self.nodeidx[(i,j)]
-                        #if pixelclass[i,j] == df.CONFLUENCE:
-                        #    print('Ridge reached a confluence', ipt, ir, i,j)
-
-                    # the last point is a critical point
-                    # we add its index to the ridgelist
-                    self.nodedict[endindex]['ridge'].append(-ir)
-                    # self.ridgedict[ir]={
-                    #     'start' : ipt,
-                    #     'polyline' : polylist,
-                    #     'end' : endindex,
-                    #     'hill' : ihill
-                    # }
-                    self.ridgedict[ir]['polyline'] = polylist
-                    self.ridgedict[ir]['end'] = endindex
-                    if thalwegside:
-                        self.ridgedict[ir]['endside'] = thalwegside
-                        
-    def orderRidgesAroundNodesC(self):
-        """
-        Orders the list of ridges around each node in a clockwise order 
-
-        To be done: holes are not considered.
-
-        Returns
-        -------
-        None.
-
-        """
-        for ipt, pt in self.nodedict.items():
-            # -1 is the id of the virtual pit closing outside the domain
-            ridgelist = pt['ridge']
-            nr = len(ridgelist)
-            if nr < 2:
-                continue
-            if ipt == -1:
-                self.orderRidgesAroundVirtualPit()
-            elif ipt < -1:
-                # holes must be virtual pits with id<-1
-                # get all the neighbours around the saddles
-                continue
-            else:
-                (i, j) = pt['ij']
-                neighbours = [(i+di, j+dj) for (di, dj) in df.ldr8]
-                # arrange the lines in the same order as the neighbours
-                try:
-                    ridgelist.sort(key=lambda it: neighbours.index(
-                        self.ridgedict[abs(it)]['polyline'][df.getSecondPointPosition(it)]))
-                except (IndexError, ValueError) as err:
-                    print('Exception raised in orderRidgesAroundNodes',
-                          err, ipt, pt, neighbours)
-                # check if two ridges overlap at the node
-                for i in range(nr):
-                    ir1 = ridgelist[i-1]
-                    ir2 = ridgelist[i]
-                    absir1 = abs(ir1)
-                    absir2 = abs(ir2)
-                    hill1 = self.ridgedict[absir1]['hill']
-                    hill2 = self.ridgedict[absir2]['hill']
-                    secondpoint = self.ridgedict[absir1]['polyline'][df.getSecondPointPosition(
-                        ir1)]
-                    if secondpoint == self.ridgedict[absir2]['polyline'][df.getSecondPointPosition(ir2)]:
-                        thalweglist = pt['thalweg']
-                        if hill1 == hill2:
-                            for itt in thalweglist:
-                                t = self.thalwegdict[abs(itt)]
-                                if t['lefthill'] == hill1 and t['righthill'] == hill1 and secondpoint == t['polyline'][df.getSecondPointPosition(itt)]:
-                                    it = itt
-                                    break
-                            try:
-                                if ir1 > 0:
-                                    ts1 = self.ridgedict[absir1]['startside']
-                                else:
-                                    ts1 = self.ridgedict[absir1]['endside']
-                                if ir2 > 0:
-                                    ts2 = self.ridgedict[absir2]['startside']
-                                else:
-                                    ts2 = self.ridgedict[absir2]['endside']
-                            except (IndexError, ValueError, KeyError) as err:
-                                print(
-                                    'Exception raised in orderRidgesAroundNodes', err)
-                                print('if hill1 == hill2', ipt, it, ir1, ir2)
-                            if ts1 and ts2 :
-                                if ts1 == ts2:
-                                    print("Error at node", ipt, "ridges",
-                                          ir1, "and", ir2, "on the same side")
-                                # the one on the left should have a thalwegside of -1
-                                # if not, we swap them
-                                if (ts1 == 1 and it > 0) or (ts1 == -1 and it < 0):
-                                    ridgelist[i] = ir1
-                                    ridgelist[i-1] = ir2
-                        else:
-                            for it in thalweglist:
-                                if it < 0:
-                                    t = self.thalwegdict[-it]
-                                    if t['polyline'][-2] != secondpoint:
-                                        continue
-                                    lefthill = t['righthill']
-                                    righthill = t['lefthill']
-                                else:
-                                    t = self.thalwegdict[it]
-                                    if t['polyline'][1] != secondpoint:
-                                        continue
-                                    lefthill = t['lefthill']
-                                    righthill = t['righthill']
-                                if hill2 == lefthill and hill1 == righthill:
-                                    ridgelist[i-1] = ir2
-                                    ridgelist[i] = ir1
                                     
     def insertIntoHills(self, i_in, j_in) :
         ###1###CORRECTION OF THALWEGS THAT HAVE BEEN CORRECTED
@@ -1476,7 +555,8 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
     
     def InOutCulverts(self, ponceaux_avec_z, ponceaux_avec_z_prolonges) :
         """
-        Updates the list of culverts by connecting them to the network's thalwegs
+        Compute inlets and outlets of culverts and return the list of culverts
+        with candidate inlets and outlets and min and max along culverts
 
         Parameters
         ----------
@@ -1487,8 +567,6 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
 
         Returns
         -------
-        ponceaux_update :
-            an updated list of culverts
         entrees_candidates :
             candidate culvert entrances
         sorties_candidates :
@@ -1504,17 +582,18 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         ind_dict = []   # 
         sorties_candidates = []    # list of candidate outlets at culvert level
         ind_dict2 = [] # list representing the keys of the dictionary of candidate outputs
-        ponceaux_update = []
         l = 1
     
-        for ponceau in ponceaux_avec_z :
+        for ind, ponceau in enumerate(ponceaux_avec_z):
             ## Culvert index 
-            ind = ponceaux_avec_z.index(ponceau)   # index of the culvert in the list of culverts_with_z
+#            ind = ponceaux_avec_z.index(ponceau)   # index of the culvert in the list of culverts_with_z
             # r = 0
             ## Determine the orientation of the elevation profile along the y-axis.
             if ponceau[0][1] < ponceau[-1][1]:
+                #note = "Le profil d'élévation est orienté de gauche à droite selon l'axe y"
                 note = "The elevation profile is oriented from left to right along the y-axis"
             elif ponceau[0][1] > ponceau[-1][1]:
+                #note = "Le profil d'élévation est orienté de droite à gauche selon l'axe y"
                 note = "The elevation profile is oriented from right to left along the y-axis"
             
             ## Create a list of z-elevations for each culvert
@@ -1540,8 +619,8 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
                     z_1 = max_point1[2]
                     z_2 = max_point2[2]
                     # if dist < 5 :
-                    if z_1 - z_2 < 0.5 :
-                        if df.entre(max_point1, max_point2, min_point):
+                    if z_1 - z_2 < self.roadheight :
+                        if df.between(max_point1, max_point2, min_point):
                            min_rejetes.append(min_point)
             
             ## Remove these rejected minimums from the list of local minimums
@@ -1656,8 +735,6 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
             sorties_candidates.append(sortie_cand)
             ind_dict2.append(ind+1)
             
-            ponceaux_update.append(ponceau)
-            
             ## elevation profiles
             i_values = [entry[0] for entry in ponceau]
             j_values = [entry[1] for entry in ponceau]
@@ -1693,8 +770,20 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
             for i, j in zip(i_min_s, j_min_s):
                 dist =+ df.calculate_distance(i, j, i_initial, j_initial)
                 distance_min_s.append(dist)
+            # plt.figure(figsize=(8, 8))
+            # plt.plot(distance , z_values, marker='o', label='Pixels du ponceau')
+            # plt.scatter(distance_min , z_min, marker='o', s=200, facecolors = 'none', edgecolors='red', linewidths=2, label='Entrées Candidates')
+            # plt.scatter(distance_max , z_max, marker='o', s=200, facecolors = 'none', edgecolors='orange', linewidths=2, label='Maximums (Route)')
+            # plt.scatter(distance_min_s , z_min_s, marker='o', s=200, facecolors = 'none', edgecolors='green', linewidths=2, label='Sorties Candidates')
+            # plt.xlabel('Distance along the culvert')
+            # plt.ylabel('Elevation Z')
+            # plt.title(f"Elevation profile along the culvert {l}")
+            # l = l+1
+            # plt.grid(True)
+            # plt.legend()
+            # plt.show()
             
-        return ponceaux_update, entrees_candidates, sorties_candidates, min_locaux, max_locaux
+        return entrees_candidates, sorties_candidates
                    
             
     def entrees_sorties_sansZ(self, entrees_candidates, sorties_candidates) :
@@ -1746,11 +835,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
 
         Returns
         -------
-        dictionnaire_entrees :
-            dictionary of candidate inputs
         transfluences_entrees 
-        dictionnaire_sorties :
-            dictionary of candidate exits
         transfluences_sorties
         
         """ 
@@ -1758,12 +843,13 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         dictionnaire_entrees = {}
         transfluences_entrees = []
           
+        pixelclass = self.terrain.pixelclass
         for point in entrees_candidatess :
             ind = entrees_candidatess.index(point)
             k = point[0]
             m = point[1]
             neighbors = [(k-1, m-1), (k, m-1), (k+1, m-1), (k-1, m), (k+1, m), (k-1, m+1), (k, m+1), (k+1, m+1)]      
-            if self.terrain.pixelclass[k, m] == df.THALWEG or self.terrain.pixelclass[k, m] == df.SADDLE or self.terrain.pixelclass[k, m] == df.CONFLUENCE or self.terrain.pixelclass[k, m] == df.PIT :
+            if CellType.isThalweg(pixelclass[k, m]) or CellType.isCourseNode(pixelclass[k, m]) :
                 intersect = [k, m]
                 transfluences_entrees.append(intersect)
                 dictionnaire_entrees[ind] = intersect
@@ -1774,7 +860,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
                 point_s = sorties_candidates[ind_s]
                 z_s = point_s[0][2]
                 for nk, nm in neighbors :
-                    if self.terrain.pixelclass[nk, nm] == df.THALWEG or self.terrain.pixelclass[nk, nm] == df.SADDLE or self.terrain.pixelclass[nk, nm] == df.CONFLUENCE or self.terrain.pixelclass[nk, nm] == df.PIT :
+                    if CellType.isThalweg(pixelclass[nk, nm]) or CellType.isCourseNode(pixelclass[nk, nm]) :
                         nz = self.terrain.getHeight(nk,nm)
                         if nz > z_s :
                             z_cand.append(nz)
@@ -1797,7 +883,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
             k = point[0]
             m = point[1]
             neighbors = [(k-1, m-1), (k, m-1), (k+1, m-1), (k-1, m), (k+1, m), (k-1, m+1), (k, m+1), (k+1, m+1)]      
-            if self.terrain.pixelclass[k, m] == df.THALWEG or self.terrain.pixelclass[k, m] == df.SADDLE or self.terrain.pixelclass[k, m] == df.CONFLUENCE or self.terrain.pixelclass[k, m] == df.PIT :
+            if CellType.isThalweg(pixelclass[k, m]) or CellType.isCourseNode(pixelclass[k, m]) :
                 intersect = [k, m]
                 transfluences_sorties.append(intersect)
                 dictionnaire_sorties[ind] = intersect
@@ -1805,7 +891,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
                 cand = []
                 z_cand = []
                 for nk, nm in neighbors :
-                    if self.terrain.pixelclass[nk, nm] == df.THALWEG or self.terrain.pixelclass[nk, nm] == df.SADDLE or self.terrain.pixelclass[nk, nm] == df.CONFLUENCE or self.terrain.pixelclass[nk, nm] == df.PIT :
+                    if CellType.isThalweg(pixelclass[nk, nm]) or CellType.isCourseNode(pixelclass[nk, nm]) :
                         nz = self.terrain.getHeight(nk,nm)
                         z_cand.append(nz)
                         pt_cand = [nk, nm, nz]
@@ -1822,9 +908,9 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
                     transfluences_sorties.append(intersect) # if there is no outlet, stop at the outlet already detected
                     dictionnaire_sorties[ind] = intersect
     
-        return dictionnaire_entrees, transfluences_entrees, dictionnaire_sorties, transfluences_sorties
+        return transfluences_entrees, transfluences_sorties
     
-    def newCulverts(self, transfluences_entrees, transfluences_sorties) :
+    def newCulverts(self, inlet, outlet) :
         """
         Updates the list of culverts by connecting them to the network's thalwegs
 
@@ -1845,8 +931,8 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         """
         
         new_ponceaux = []
-        for i in range(len(transfluences_entrees)):
-            ponceau = [transfluences_entrees[i], transfluences_sorties[i]]
+        for i in range(len(inlet)):
+            ponceau = [inlet[i], outlet[i]]
             new_ponceaux.append(ponceau)
     
         new_ponceaux_pixel = []
@@ -1854,15 +940,11 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
             coords = ponceau
             # print("coords= ", coords)
             ponceaux = bresenham(coords)
-            ponceaux_list = list(ponceaux)
-            new_ponceaux_pixel.append(ponceaux_list)
-        keys = []
-        for i in range(len(new_ponceaux_pixel)):
-            keys.append(i+1)
-        pairs = zip(keys, new_ponceaux_pixel) 
-        ponceaux_dictionnaire = dict(pairs)
+#            ponceaux_list = list(ponceaux)
+#            new_ponceaux_pixel.append(ponceaux_list)
+            new_ponceaux_pixel.append(ponceaux)
     
-        return new_ponceaux_pixel, ponceaux_dictionnaire
+        return new_ponceaux_pixel
 
 
 def readBDculverts(fichier, terrain) :
@@ -1889,7 +971,8 @@ def readBDculverts(fichier, terrain) :
     data = gpd.read_file(fichier)
     
     culvert_crs = data.crs
-
+    print(culvert_crs)
+    print(terrain.crs)
 
     # Creation of a culvert dictionary
     ponceaux_dict = data.to_dict()  
@@ -1899,7 +982,6 @@ def readBDculverts(fichier, terrain) :
     
     # Creating LineString culvert lines and storing them in a list
     lignes_ponceaux = []
-    dict_ponceaux = {}
     j = 1
     for i, ligne in ponceaux_dict['geometry'].items():
         # print('ligne = ', ligne)
@@ -1914,5 +996,5 @@ def readBDculverts(fichier, terrain) :
     # print("lignes_ponceaux = ", lignes_ponceaux)
     # print(dict_ponceaux)
    
-    return lignes_ponceaux, dict_ponceaux
+    return lignes_ponceaux
             

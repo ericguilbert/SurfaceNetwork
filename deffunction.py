@@ -14,22 +14,6 @@ from collections import deque
 from shapely.geometry import LineString
 from shapely.geometry import Point
 
-# pixel codes
-TOBEPROCESSED = 999
-NOTIN = -999
-OUT = -99
-PIT = -3
-CONFLUENCE = -2
-THALWEG = -1
-SADDLE = 0
-RIDGE = 1
-RIDWEG = -5  # overlapping ridge and thalweg, not used
-JUNCTION = 2
-PEAK = 3
-BIFURCATION = 4     # nodes connected to a culvert
-SPRING = 5 # duplicated node for single flow
-SLOPE = 99
-
 ldr8 = ((-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1))
 ldr4 = ((-1, 0), (0, 1), (1, 0), (0, -1))
 order4 = ((-1, 0), (0, -1), (0, 1), (1, 0)) # lexicographic order of neighbours
@@ -588,6 +572,60 @@ def sideOfWedge(wedge, pt):
         return -1
     return 0
 
+def sideOfWedge2(wedge, pt):
+    """
+    Return a value according to the position of pt within the wedge.
+    A wedge is a triplet of points (r,p,q) where p is the summit of the wedge
+    and the wedge is the clockwise angle between the vectors pr and pq
+    If pt is in the wedge, the function returns 1.
+    If pt is on an edge of the wedge, returns 0,
+    If pt is outside the wedge, returns -1
+
+    Parameters
+    ----------
+    wedge : a triplet of points
+        The second point is the summit of the wedge.
+        First and third points define the edges
+        The angle is in clockwise order with point coordinates corresponding
+        to pixel coordinates (row and column)
+    pt : point (i,j)
+        Point compared to the wedge.
+
+    Returns
+    -------
+    Integer
+        1 if pt is in the wedge,
+        0 if pt is on an edge of the wedge
+        -1 if pt is outside the wedge
+
+    """
+    r = wedge[0]
+    p = wedge[1]
+    q = wedge[2]
+    u = (pt[0] - p[0], pt[1] - p[1])
+    v1 = (q[0] - p[0], q[1] - p[1])
+    v2 = (r[0] - p[0], r[1] - p[1])
+    
+    # sign of cross product
+    sign1 = v1[0]*u[1] - v1[1]*u[0]
+    sign2 = v2[0]*u[1] - v2[1]*u[0]
+    v2u = v2[0]*u[0] + v2[1]*u[1]
+    v1u = v1[0]*u[0] + v1[1]*u[1]
+
+    # point on the border if vector colinear and same orientation as edge
+    if (sign1 == 0 and v1u >= 0) or (sign2 == 0 and v2u >= 0):
+        return 0
+
+    # angle between v1 and v2
+    sign = v1[0]*v2[1] - v1[1]*v2[0]
+    if sign >= 0: # wedge angle is shorter than pi
+        if sign1 > 0 and sign2 < 0: # right of v1 and left of v2
+            return 1
+        return -1
+    if sign1 < 0 and sign2 > 0: # left of v1 and right of v2
+        return -1
+    return 1
+
 def arrangeLine(polyline, linelist):
     tmp = polyline[1:-1]
     tmp = sorted(tmp, key = lambda p: abs(p[0]-polyline[0][0])+abs(p[1]-polyline[0][1]))
@@ -695,7 +733,7 @@ def distance_between_points(point1, point2):
     return math.sqrt((point2[0] - point1[0]) ** 2 + (point2[1] - point1[1]) ** 2)
 
 # Function to check whether a point C lies between two points A and B
-def entre(A, B, C):
+def between(A, B, C):
     """
     Checks whether the x, y and z coordinates of C are between A and B
 

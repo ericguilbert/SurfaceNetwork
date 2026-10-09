@@ -4,9 +4,10 @@ terrain.py:
 	Class storing a DTM from a raster grid, used for the computation of a surface network
 	It includes an array storing the triangulation of the DTM
 	
-	author: Eric Guilbert, Yassmine Zada
+	author: Eric Guilbert
 """
 import math
+#from pylab import *
 
 from time import perf_counter_ns
 from collections import deque
@@ -14,7 +15,9 @@ import numpy as np
 
 from iomodule import readRasterDTM
 import deffunction as df
+from celltype import CellType
 
+var_dict = {}
 
 class Terrain:
     # class describing a terrain defined by:
@@ -56,17 +59,9 @@ class Terrain:
         outside = False
         # fill the pixelclass array
         # at the beginning all points are either slope or notin class
-        self.pixelclass = np.ones((self.m, self.n), dtype=int)
-        self.pixelclass2 = np.ones((self.m, self.n), dtype=int)
-        for i in range(self.m):
-            for j in range(self.n):
-                if self.dtm[i, j] > self.nodata:
-                    self.pixelclass[i, j] = df.SLOPE
-                    self.pixelclass2[i, j] = df.SLOPE
-                else:
-                    self.pixelclass[i, j] = df.NOTIN # outside the terrain
-                    self.pixelclass2[i, j] = df.NOTIN # outside the terrain
-                    outside = True
+        maskinside = self.dtm > self.nodata
+        self.pixelclass = np.where(maskinside, CellType.REGULAR, CellType.INNaN)
+        outside = np.any(~maskinside)
 
         global nodata 
         nodata = self.nodata
@@ -84,15 +79,18 @@ class Terrain:
         double = set()
         seen_add = seen.add
         double_add = double.add
-        for i in self.boundary:
-            if i in seen:
-                double_add(i)
-            else:
-                seen_add(i)
+        thisboundary = self.boundary
+        for i in thisboundary:
+            (double_add if i in seen else seen_add)(i)
+#            if i in seen:
+#                double_add(i)
+#            else:
+#                seen_add(i)
         self.duplicate = double
             
         # initialises other attributes
-        self.diag = np.zeros((self.m - 1, self.n - 1), dtype=np.ndarray)
+#        self.diag = np.zeros((self.m - 1, self.n - 1), dtype=np.ndarray)
+        self.diag = np.zeros((self.m - 1, self.n - 1), dtype=np.int8)
         self.neighbour = np.zeros((self.m, self.n), dtype=np.ndarray)
         self.minz = np.min(self.dtm)
         self.maxz = np.max(self.dtm)
@@ -113,6 +111,31 @@ class Terrain:
 
         """
         return self.dtm[(i,j)]
+
+    def findGradient(self, ij, polylist):
+        z = self.dtm[ij]
+        p = polylist[0]
+        q = polylist[1]
+        dp = (q[0] - p[0], q[1] - p[1])
+        d = df.ldr8.index(dp)
+        dz = [0, 0]
+        neighbours =[(0,0)] * 6
+        for k in [1,2,3]:
+            ldr1 = df.ldr8[d - k]
+            ldr2 = df.ldr8[d - 8 + k]
+            neighbours[k-1] = (ldr1, ldr2)
+            ldr1 = (2*ldr1[0], 2*ldr1[1])
+            ldr2 = (2*ldr2[0], 2*ldr2[1])
+            neighbours[k+2] = (ldr1, ldr2)
+        k = 0
+        while dz[0] == dz[1] and k < 6:
+            (dp1, dp2) = neighbours[k]
+            ldr = [dp1, dp2]
+            z1 = self.dtm[p[0]+dp1[0], p[1]+dp1[1]]
+            z2 = self.dtm[p[0]+dp2[0], p[1]+dp2[1]]
+            dz = df.gradLength(z, [z1, z2], ldr)
+            k += 1
+        return dz
 
     def fromIndexToCoordinates(self, i, j):
         """
@@ -186,7 +209,8 @@ class Terrain:
             Returns True if the point is in the terrain.
 
         """
-        return self.isInDomain(i, j) and self.pixelclass[i, j] > df.OUT
+#        return self.isInDomain(i, j) and self.pixelclass[i, j] > df.OUT
+        return self.isInDomain(i, j) and not (self.pixelclass[i, j] & CellType.NaN)
 
     def isInSubPixel(self, i, j):
         """
@@ -208,7 +232,8 @@ class Terrain:
             Returns True if the point is in the terrain.
 
         """
-        return self.isInSubPixelDomain(i, j) and self.pixelclass[int(i), int(j)] > df.OUT
+#        return self.isInSubPixelDomain(i, j) and self.pixelclass[int(i), int(j)] > df.OUT
+        return self.isInSubPixelDomain(i, j) and not (self.pixelclass[int(i), int(j)] & CellType.NaN)
 
     def isInDomain(self, i, j):
         """
@@ -268,16 +293,17 @@ class Terrain:
         n1 = self.n - 1
         dr = ((-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1))
 
+        thisdiag = self.diag        
         for i in range(self.m):
             for j in range(self.n):
                 edge = [0, 1, 0, 1, 0, 1, 0, 1]
-                if (i > 0) and (j > 0) and self.diag[i - 1, j - 1] == 1:
+                if (i > 0) and (j > 0) and thisdiag[i - 1, j - 1] == 1:
                     edge[0] = 1
-                if (i > 0) and (j < n1) and self.diag[i - 1, j] == -1:
+                if (i > 0) and (j < n1) and thisdiag[i - 1, j] == -1:
                     edge[2] = 1
-                if (i < m1) and (j < n1) and self.diag[i, j] == 1:
+                if (i < m1) and (j < n1) and thisdiag[i, j] == 1:
                     edge[4] = 1
-                if (i < m1) and (j > 0) and self.diag[i, j - 1] == -1:
+                if (i < m1) and (j > 0) and thisdiag[i, j - 1] == -1:
                     edge[6] = 1
                 neigh = []
                 for ie, e in enumerate(edge):
@@ -329,8 +355,8 @@ class Terrain:
         """
         # computation of the outer boundary
         instart, jnstart = (0, 0)
-        while self.pixelclass[instart, jnstart] == df.NOTIN:
-            self.pixelclass[instart, jnstart] = df.OUT
+        while self.pixelclass[instart, jnstart] == CellType.INNaN:
+            self.pixelclass[instart, jnstart] = CellType.OUT
             instart += 1
             if instart == self.m:
                 instart = 0
@@ -351,16 +377,19 @@ class Terrain:
         outstack = boundary[:]
         while outstack:
             (i, j) = outstack.pop()
-            if self.isInDomain(i, j) and self.pixelclass[i, j] == df.NOTIN:
-                self.pixelclass[i, j] = df.OUT
+            if self.isInDomain(i, j) and self.pixelclass[i, j] == CellType.INNaN:
+                self.pixelclass[i, j] = CellType.OUT
                 pxlaround = [(i + di, j + dj) for (di, dj) in df.ldr4]
                 outstack.extend(pxlaround)
         # all pixels in holes are considered inside
         # to be modified to handle holes
-        for i in range(self.m):
-            for j in range(self.n):
-                if self.pixelclass[i, j] == df.NOTIN:
-                    self.pixelclass[i, j] = df.SLOPE
+        thisarray = self.pixelclass
+        mask = (thisarray == CellType.INNaN)
+        thisarray[mask] = CellType.REGULAR
+#        for i in range(self.m):
+#            for j in range(self.n):
+#                if self.pixelclass[i, j] == CellType.INNaN:
+#                    self.pixelclass[i, j] = CellType.REGULAR
 
         # computation of the inner boundary
         # istart,jstart is the first pixel inside the terrain
@@ -545,14 +574,21 @@ class Terrain:
         # diag = ones((m-1,n-1)) # nw-se orientation
         # diag = -1*ones((m-1,n-1)) # sw-ne orientation
         # orientation towards the lowest point
-        for i in range(self.m - 1):
-            for j in range(self.n - 1):
-                min1 = min(self.dtm[i, j], self.dtm[i + 1, j + 1])
-                min2 = min(self.dtm[i + 1, j], self.dtm[i, j + 1])
-                if (min1 < min2):
-                    self.diag[i, j] = 1
-                else:
-                    self.diag[i, j] = -1
+        dtm = self.dtm
+        
+        min1 = np.minimum(dtm[:-1, :-1], dtm[1:, 1:])
+        min2 = np.minimum(dtm[1:, :-1], dtm[:-1, 1:])
+        
+        self.diag[:, :] = np.where(min1 < min2, 1, -1)
+
+#        for i in range(self.m - 1):
+#            for j in range(self.n - 1):
+#                min1 = min(dtm[i, j], dtm[i + 1, j + 1])
+#                min2 = min(dtm[i + 1, j], dtm[i, j + 1])
+#                if (min1 < min2):
+#                    self.diag[i, j] = 1
+#                else:
+#                    self.diag[i, j] = -1
 
         # neighbour is a matrix where each cell contains the list of neighbours of a point
         self.buildNeighbourArray()
@@ -562,7 +598,7 @@ class Terrain:
         """
         Flip the diagonals towards the highest point of the cell. If saddles and
         thalwegs have been computed before (which should be the case), diagonals
-        connecting to saddles and followed by thalwegs are not flipped.
+        connecting to saddles and those run through by thalwegs are not flipped.
 
         Returns
         -------
@@ -580,27 +616,63 @@ class Terrain:
 
         # set the diagonals around passes according to ridges and thalwegs
 
-        # go through all diagonals
-        for i in range(self.m - 1):
-            for j in range(self.n - 1):
-                # check if one point is a pass or two points are thalwegs or confluences
-                # in that case, we don't modify the diagonal
-                #                if (self.diag[i,j] == 1 and \
-                #                ( (self.pixelclass[i,j] != SADDLE and self.pixelclass[i+1,j+1] != SADDLE) and (self.pixelclass[i,j] == SLOPE or self.pixelclass[i+1,j+1] == SLOPE)))\
-                #                or (self.diag[i,j] == -1 and \
-                #                ( (self.pixelclass[i+1,j] != SADDLE and self.pixelclass[i,j+1] != SADDLE) and (self.pixelclass[i+1,j] == SLOPE or self.pixelclass[i,j+1] == SLOPE))):
-                if self.pixelclass[i, j] == df.SADDLE or self.pixelclass[i, j + 1] == df.SADDLE or self.pixelclass[
-                    i + 1, j] == df.SADDLE or self.pixelclass[i + 1, j + 1] == df.SADDLE:
-                    continue
-                if (self.pixelclass[i, j] != df.SLOPE and self.pixelclass[i + 1, j + 1] != df.SLOPE) \
-                        or (self.pixelclass[i + 1, j] != df.SLOPE and self.pixelclass[i, j + 1] != df.SLOPE):
-                    continue
-                max1 = max(self.dtm[i, j], self.dtm[i + 1, j + 1])
-                max2 = max(self.dtm[i + 1, j], self.dtm[i, j + 1])
-                if (max1 > max2):
-                    self.diag[i, j] = 1
-                else:
-                    self.diag[i, j] = -1
+        pc = self.pixelclass
+        dtm = self.dtm
+        
+        # Top-left update block of 'diag' (shape: (m-1, n-1))
+        block = self.diag
+        
+        # Corners of each 2x2 window
+        w = dtm[:-1, :-1]  # (i,   j)
+        x = dtm[1:,  1:]   # (i+1, j+1)
+        y = dtm[1:,  :-1]  # (i+1, j)
+        z = dtm[:-1, 1:]   # (i,   j+1)
+        
+        # Pixel classes at those corners
+        pc_w = pc[:-1, :-1]
+        pc_x = pc[1:,  1:]
+        pc_y = pc[1:,  :-1]
+        pc_z = pc[:-1, 1:]
+        
+        SADDLE = CellType.SADDLE
+        SLOPE  = CellType.REGULAR
+        
+        # Skip where any corner is a SADDLE
+        has_saddle = (pc_w == SADDLE) | (pc_x == SADDLE) | (pc_y == SADDLE) | (pc_z == SADDLE)
+        
+        # Proceed only if each diagonal has at least one SLOPE:
+        # main diagonal: (w, x) ; off diagonal: (y, z)
+        main_has_slope = (pc_w == SLOPE) | (pc_x == SLOPE)
+        off_has_slope  = (pc_y == SLOPE) | (pc_z == SLOPE)
+        
+        process_mask = (~has_saddle) & main_has_slope & off_has_slope
+        
+        # Compare the maxima on opposite corners
+        max1 = np.maximum(w, x)
+        max2 = np.maximum(y, z)
+        cmp  = (max1 > max2)
+        
+        # Update only the cells we are allowed to modify
+        block[process_mask] = -1
+        block[process_mask & cmp] = 1
+
+        # # go through all diagonals
+        # for i in range(self.m - 1):
+        #     for j in range(self.n - 1):
+        #         # check if one point is a pass or two points are thalwegs or confluences
+        #         # in that case, we don't modify the diagonal
+        #         if pixelclass[i, j] == CellType.SADDLE or pixelclass[i, j + 1] == CellType.SADDLE or pixelclass[
+        #             i + 1, j] == CellType.SADDLE or pixelclass[i + 1, j + 1] == CellType.SADDLE:
+        #             continue
+        #         if (pixelclass[i, j] != CellType.REGULAR and pixelclass[i + 1, j + 1] != CellType.REGULAR) \
+        #                 or (pixelclass[i + 1, j] != CellType.REGULAR and pixelclass[i, j + 1] != CellType.REGULAR):
+        #             continue
+        #         max1 = max(dtm[i, j], dtm[i + 1, j + 1])
+        #         max2 = max(dtm[i + 1, j], dtm[i, j + 1])
+        #         if (max1 > max2):
+        #             self.diag[i, j] = 1
+        #         else:
+        #             self.diag[i, j] = -1
 
         # neighbour is a matrix where each cell contains the list of neighbours of a point
         self.buildNeighbourArray()
@@ -627,8 +699,8 @@ class Terrain:
         # first, diagonals are set to preserve critical lines around saddles
         # second, diagonals connect the lowest point to limit the number of pits
         # and facilitate the flow
-        # this is good for extracting thalwegs and fit them on a drainage network
-        # but it leads to a very large number of peaks, 
+        # while it reduces the number of pits,it leads to a very large number of peaks
+        # because we have maximised the number of saddles
 
         # the matrix diag stores the orientation of each diagonal in a cell,
         # -1 diagonal is SW-NE
@@ -639,7 +711,7 @@ class Terrain:
 
         # set the diagonals around passes according to ridges and thalwegs
         for ipss, pss in passdict.items():
-            linelist = pss['line']
+            linelist = pss['criticalline']
             for l in linelist:
                 p1 = l[0]
                 p2 = l[1]
@@ -734,7 +806,6 @@ class Terrain:
             ik = i + dr[0]
             jk = j + dr[1]
             if self.isInside(ik, jk):
-                #            if ((ik>=0) and (ik<self.m) and (jk>=0) and (jk<self.n)):
                 v[k] = self.dtm[ik, jk]
             else:
                 v[k] = self.nodata
@@ -879,7 +950,8 @@ class Terrain:
         # we go through each point and check its elevation against its neighbours
         for i in range(m):
             for j in range(n):
-                if pixelclass[i, j] > df.OUT:
+                if not (pixelclass[i, j] & CellType.NaN):
+#                if pixelclass[i, j] > df.OUT:
                     z = A[i, j]
                     v = self.getAllNeighbourHeights(i, j)  # elevation of 8 neighbours
                     signe = [0] * nv  # sign of elevation difference with centre
@@ -955,31 +1027,30 @@ class Terrain:
                         saddledict[count_n] = {
                             'ij': (i, j),
                             'z': A[i, j],
-                            'line': criticalline,
-                            'thalweg': [],
-                            'ridge': [],
-                            'type': df.SADDLE
+                            'criticalline': criticalline,
+                            'line': [],
+                            'type': CellType.SADDLE
                         }
-                        pixelclass[i, j] = df.TOBEPROCESSED
+                        pixelclass[i, j] = CellType.TOBEPROCESSED
                         saddleidx[i, j] = count_n
                         count_n += 1
                         count_p += (Nc / 2 - 1)
         return saddledict, saddleidx    # computation of saddles directly from the raster
-
-    def pixelCulverts(self, lignes_ponceaux) :
+        
+    def pixelCulverts(self, linelist, length = 5):
         """
-        Pixelates the list of original culverts
+        Pixelates a list of lines
 
         Parameters
         ----------
-        lignes_ponceaux :
-            list of culvert lines
+        linelist :
+            list of line segments defined by start and end points
 
         Returns
         -------
-        ponceaux_avec_z :
+        zline :
             list of pixelated culverts with height z
-        ponceaux_avec_z_prolonges : 
+        extendedzline : 
             list of extended culverts pixelated with height z
 
         """
@@ -988,7 +1059,7 @@ class Terrain:
         ponceaux_pixels = []
          
         # Construction of a list of culverts with their (i, j) indices
-        for linestring in lignes_ponceaux :
+        for linestring in linelist :
             # extracting coordinates from the list of culverts linestring
             coords = list(linestring.coords)
             indices = []
@@ -1019,13 +1090,12 @@ class Terrain:
             ponceaux_list_det.append(ponceaux_list)
             
         # Construction of a list of culverts extended by 5m
-        longueur_prolongement = 5
         ponceau_prolongess = [] 
         for ponceau in ponceaux_list_det :
             ponceau_list = []
             ponceau_list.append((ponceau[0][0], ponceau[0][1]))
             ponceau_list.append((ponceau[-1][0], ponceau[-1][1]))
-            n = prolonger(ponceau_list)
+            n = prolonger(ponceau_list, length)
             bout_prolonge1 = n[0]
             bout_prolonge2 = n[1]
             bouts1 = bresenham(bout_prolonge1)
@@ -1055,25 +1125,25 @@ class Terrain:
             ponceaux_avec_z_prolonges_.append(ponceau_z)
           
         # Remove duplicates, search for: where does it come from?
-        ponceaux_avec_z = []
+        zline = []
         for data in ponceaux_avec_z_ :
             ## remove duplicates
             ponceau = []
             for i in data :
                 if i not in ponceau :
                     ponceau.append(i)
-            ponceaux_avec_z.append(ponceau)
+            zline.append(ponceau)
             
-        ponceaux_avec_z_prolonges = []
+        extendedzline = []
         for data in ponceaux_avec_z_prolonges_ :
             ## remove duplicates
             ponceau = []
             for i in data :
                 if i not in ponceau :
                     ponceau.append(i)
-            ponceaux_avec_z_prolonges.append(ponceau)
+            extendedzline.append(ponceau)
         
-        return ponceaux_avec_z, ponceaux_avec_z_prolonges
+        return zline, extendedzline
     
     def extendCulvert(self, ponceau, longueur_prolongement):
         
@@ -1108,7 +1178,43 @@ class Terrain:
         
         return ponceau_prolong, ponceau_prolong_z
     
+      
+    
 def bresenham(coords):  
+    """
+    Crosses along the culverts and returns the pixel indixes
+
+    Parameters
+    ----------
+    coords : 
+        coordinates of culvert lines
+
+    Returns
+    -------
+    None.
+
+    """
+    
+    x0, x1 = coords[0][0], coords[1][0]
+    y0, y1 = coords[0][1], coords[1][1]
+    dx, dy = abs(x1 - x0), abs(y1 - y0)
+    sx, sy = 1 if x0 < x1 else -1, 1 if y0 < y1 else -1
+    err = dx - dy 
+    line = []
+    while True : 
+        line.append((x0,y0))
+        if x0 == x1 and y0 == y1 :
+            break
+        e2 = 2 * err
+        if e2 > -dy :
+            err -= dy
+            x0 += sx
+        if e2 < dx :
+            err += dx
+            y0 += sy
+    return line
+            
+def bresenham2(coords):  
     """
     Crosses along the culverts and returns the pixel indixes
 
@@ -1144,7 +1250,7 @@ def bresenham(coords):
         if e2 > dx :
             yield(x0 - sx, y0)
             
-def prolonger(points):    
+def prolonger(points, distance = 5):    
     """
     Extends the list of culverts
 
@@ -1172,56 +1278,14 @@ def prolonger(points):
         angle = math.atan2(y2 - y1, x2 - x1)
         # distance = ((x2 - x1)**2 + (y2 - y1)**2)**0.5
         # Calculate the new coordinates of the next point
-        nouveau_x1 = round(x2 + 5 * math.cos(angle))
-        nouveau_y1 = round(y2 + 5 * math.sin(angle))
+        nouveau_x1 = round(x2 + distance * math.cos(angle))
+        nouveau_y1 = round(y2 + distance * math.sin(angle))
         # Calculate the new coordinates of the previous point
-        nouveau_x2 = round(x1 - 5 * math.cos(angle))
-        nouveau_y2 = round(y1 - 5 * math.sin(angle))
+        nouveau_x2 = round(x1 - distance * math.cos(angle))
+        nouveau_y2 = round(y1 - distance * math.sin(angle))
         bout_prolonge1.append((x2, y2))
         bout_prolonge1.append((nouveau_x1, nouveau_y1))
         bout_prolonge2.append((nouveau_x2, nouveau_y2))
         bout_prolonge2.append((x1, y1))
         
     return bout_prolonge1, bout_prolonge2 
-
-        
-def profilElevation(ponceaux) :
-    """
-    Displays elevation profiles
-
-    Parameters
-    ----------
-    ponceaux :
-        list of culverts
-
-    Returns
-    -------
-    None
-
-    """
-    
-    l = 1
-    for ponceau in ponceaux :
-        i_values = [entry[0] for entry in ponceau]
-        j_values = [entry[1] for entry in ponceau]
-        z_values = [entry[2] for entry in ponceau]
-        
-        i_initial = i_values[0]
-        j_initial = j_values[0]
-        
-        distance = []
-        
-        for i, j in zip(i_values, j_values):
-            dist =+ df.calculate_distance(i, j, i_initial, j_initial)
-            distance.append(dist)
-            
-        plt.figure(figsize=(8, 8))
-        plt.plot(distance , z_values, marker='o', label='Pixels du ponceau')
-        plt.xlabel('Distance along the culvert')
-        plt.ylabel('Elevation Z')
-        plt.title(f"Elevation profile along the culvert {l}")
-        l = l+1
-        plt.grid(True)
-        plt.legend()
-        plt.show()
-

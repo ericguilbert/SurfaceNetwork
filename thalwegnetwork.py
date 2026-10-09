@@ -16,12 +16,13 @@ import numpy as np
 import shapely.geometry
 
 import deffunction as df
+from celltype import CellType
 
 class ThalwegNetwork:
     # a class describing a thalweg network composed of
     # nodedict: a dictionary of critical points in the network (pit, saddle, confluence)
-    # thalwegdict: a dictionary of thalwegs connecting at critical points
-    # hilldict: a dictionary of hills (ascending cells)
+    # linedict: a dictionary of lines connecting at critical points
+    # hilldict: a dictionary of hills (descending cells)
     
     # saddles are detected first
     # terrain triangulation is computed
@@ -42,9 +43,9 @@ class ThalwegNetwork:
         """
         self.nodedict = {}
         self.nodeidx = {}
-        self.thalwegdict = {}
-        self.ridgedict = {}
+        self.linedict = {}
         self.nodekey = 0
+        self.linekey = 1
     
     # constructor building the network from a terrain
     def buildThalwegsFromTerrain(self, terrain, correction = True):
@@ -68,8 +69,7 @@ class ThalwegNetwork:
         """
         self.nodedict = {}
         self.nodeidx = {}
-        self.thalwegdict = {}
-        self.ridgedict = {}
+        self.linedict = {}
         self.terrain = terrain
         
         if correction:
@@ -130,8 +130,7 @@ class ThalwegNetwork:
         """
         self.nodedict = {}
         self.nodeidx = {}
-        self.thalwegdict = {}
-        self.ridgedict = {}
+        self.linedict = {}
         self.terrain = terrain
         
         print("Diagonalising the raster")
@@ -167,28 +166,137 @@ class ThalwegNetwork:
             pickle.dump(self, f, pickle.HIGHEST_PROTOCOL)
         self.terrain = tmp
     
-    def getThalwegNeighbourNodes(self, ipt):
+    def isDownslopeLine(self, cellvalue: "CellType") -> bool:
         """
-        Returns nodes connected to this node through the thalwegs. Two sets are
-        returned: one containing higher neighbours and one containing lower neighbours.
+        Returns true if the passed value indicates a line of converging flow
+        In the thalweg network, downslope lines are only thalwegs
+        The method is overloaded in subclasses to consider more downslope lines
 
-        ipt: key of a node defined in nodedict
-        
+        Parameters
+        ----------
+        cellvalue : "CellType"
+            Type of cell, stored in the type field.
+
         Returns
         -------
-        (lowerneighbour, higherneighbour): two sets containing all neighbouring node ids.
+        bool
+            True if the cell type corresponds to a thalweg, that is, it is a 
+            line and the thalweg value is on.
+        """
+        return cellvalue & CellType.THALWEG_FLAG and cellvalue & CellType.LINE
+
+    def getDownslopeLinesAtNode(self, ipt):
+        """
+        Return the list of thalwegs connected to a node
+
+        Parameters
+        ----------
+        ipt : integer
+            A node index.
+
+        Returns
+        -------
+        list of integers
+            A list of integers that are the indexes of thalwegs connected to ipt.
 
         """
         pt = self.nodedict[ipt]
-        higherneighbour = set()
-        lowerneighbour = set()
-        for it in pt['thalweg']:
-            if it > 0:
-                lowerneighbour.add(self.thalwegdict[it]['end'])
-            else:
-                higherneighbour.add(self.thalwegdict[-it]['start'])
-        return lowerneighbour, higherneighbour
-    
+        line = self.linedict
+        return [i for i in pt['line'] if self.isDownslopeLine(line[abs(i)]['type'])]
+
+    def previousDownslopeLineIndexAtNode(self, ipt, it):
+        """
+        Returns the position of the first thalweg connected to ipt
+        when turning backward around ipt
+
+        Parameters
+        ----------
+        ipt : integer
+            index of the node we are looking around.
+        it : integer
+            position of a line in the list of lines connected to ipt. Lines are
+            ordered around ipt.
+
+        Returns
+        -------
+        jt : integer
+            position of the first thalweg line located before the it position
+            when going backward along the lines around ipt.
+        """
+        pt = self.nodedict[ipt]
+        line = pt['line']
+        linedict = self.linedict
+        n = len(line)
+        jt = it - 1
+        while jt != it:
+            if jt == -1:
+                jt = n - 1
+            if self.isDownslopeLine(linedict[abs(line[jt])]['type']):
+                return jt
+            jt -= 1
+            
+    def nextDownslopeLineIndexAtNode(self, ipt, it):
+        """
+        Returns the position of the next thalweg connected to ipt
+        when turning around ipt
+
+        Parameters
+        ----------
+        ipt : integer
+            index of the node we are looking around.
+        it : integer
+            position of a line in the list of lines connected to ipt. Lines are
+            ordered around ipt.
+
+        Returns
+        -------
+        jt : integer
+            position of the next thalweg line located after the it position
+            when going along the lines around ipt.
+        """
+        pt = self.nodedict[ipt]
+        line = pt['line']
+        linedict = self.linedict
+        n = len(line)
+        jt = it + 1
+        while jt != it:
+            if jt == n:
+                jt = 0
+            if self.isDownslopeLine(linedict[abs(line[jt])]['type']):
+                return jt
+            jt += 1
+            
+    def getThalwegsAtNode(self, ipt):
+        pt = self.nodedict[ipt]
+        line = self.linedict
+        return [i for i in pt['line'] if line[abs(i)]['type'] & CellType.THALWEG_FLAG]
+
+    def previousThalwegIndexAtNode(self, ipt, it):
+        pt = self.nodedict[ipt]
+        line = pt['line']
+        linedict = self.linedict
+        n = len(line)
+        jt = it - 1
+        while jt != it:
+            if jt == -1:
+                jt = n - 1
+            if linedict[abs(line[jt])]['type'] & CellType.THALWEG_FLAG:
+                return jt
+            jt -= 1
+            
+    def nextThalwegIndexAtNode(self, ipt, it):
+        pt = self.nodedict[ipt]
+        line = pt['line']
+        linedict = self.linedict
+        n = len(line)
+        jt = it + 1
+        while jt != it:
+            if jt == n:
+                jt = 0
+            if linedict[abs(line[jt])]['type'] & CellType.THALWEG_FLAG:
+                return jt
+            jt += 1
+            
     def computeThalwegLength(self, it):
         """
         Compute the length of a thalweg
@@ -202,13 +310,13 @@ class ThalwegNetwork:
         length: length of the thalweg.
 
         """
-        t = self.thalwegdict[it]
+        t = self.linedict[it]
         return df.length(t['polyline'])
     
     def computeThalwegSlope(self, it):
-        t = self.thalwegdict[it]
+        t = self.linedict[it]
         if t['end'] == -1:
-            return df.NOTIN
+            return self.terrain.nodata
         length = df.length(t['polyline'])
         ptend = self.nodedict[t['end']]
         ptstart = self.nodedict[t['start']]
@@ -272,12 +380,12 @@ class ThalwegNetwork:
         # we build up all passes
         for idx, pxl in saddledict.items():
             (i,j) = pxl['ij']
-            if pixelclass[i,j] == df.TOBEPROCESSED:
+            if pixelclass[i,j] == CellType.TOBEPROCESSED:
                 saddlestack = [idx]
-                pixelclass[i, j] = df.SADDLE
+                pixelclass[i, j] = CellType.SADDLE
                 passdict[passid] = {
                     'node' : [],
-                    'line' : [],
+                    'criticalline' : [],
                 }
                 while saddlestack:
                     idx = saddlestack.pop()
@@ -286,9 +394,9 @@ class ThalwegNetwork:
                     neighbours4 = [(i+di, j+dj) for (di,dj) in df.ldr4]
                     for k in neighbours4:
                         if (k[0] >= 0 and k[0] < m and k[1] >= 0 and k[1] < n):
-                            if (pixelclass[k] == df.TOBEPROCESSED):
+                            if (pixelclass[k] == CellType.TOBEPROCESSED):
                                 saddlestack.append(saddleidx[k])
-                                pixelclass[k] = df.SADDLE
+                                pixelclass[k] = CellType.SADDLE
                 passid += 1
 
         # get the list of all passes composed of several saddles
@@ -307,7 +415,7 @@ class ThalwegNetwork:
                 iminsaddle = min(saddlelist, key=lambda x: saddledict[x]['z'])
                 minsaddle = saddledict[iminsaddle]
                 # we get its diagonal lines
-                linelist = minsaddle['line']
+                linelist = minsaddle['criticalline']
                 # we keep the lines that are in diagonal
                 dline = [l for l in linelist if abs(l[1][0]-l[0][0])+abs(l[1][1]-l[0][1]) == 2]
                 if not dline: # if lines of a saddle are all edge-aligned, it is not in conflict
@@ -320,7 +428,7 @@ class ThalwegNetwork:
                         continue
                     saddle = saddledict[si]
                     conflictline = []
-                    for l1 in saddle['line']:
+                    for l1 in saddle['criticalline']:
                         for l2 in dline:
                             if df.crossingSegment(l1[0:2], l2[0:2]):
                                 removable = False
@@ -364,11 +472,11 @@ class ThalwegNetwork:
                     criticalline = self.terrain.checkSaddle(i,j,saddleneighbour[si])
                     if criticalline:
 #                        print('cannot remove', si)
-                        saddledict[si]['line'] = criticalline
+                        saddledict[si]['criticalline'] = criticalline
                     else:
                         saddlelist.remove(si)
                         del saddledict[si]
-                        self.terrain.pixelclass[i,j] = df.SLOPE
+                        self.terrain.pixelclass[i,j] = CellType.REGULAR
                 saddlelist.remove(iminsaddle)
 #                break
         
@@ -411,7 +519,7 @@ class ThalwegNetwork:
         # we go through each point and check its elevation against its neighbours
         for i in range(m):
             for j in range(n):
-                if pixelclass[i, j] > df.OUT:
+                if not (pixelclass[i, j] & CellType.NaN):
                     z = A[i, j]
                     ldr = self.terrain.neighbour[i, j]
                     nv = len(ldr)
@@ -489,12 +597,11 @@ class ThalwegNetwork:
                         saddledict[count_n] = {
                             'ij': (i, j),
                             'z': A[i, j],
-                            'line': criticalline,
-                            'thalweg': [],
-                            'ridge': [],
-                            'type': df.SADDLE
+                            'criticalline': criticalline,
+                            'line': [],
+                            'type': CellType.SADDLE
                         }
-                        pixelclass[i, j] = df.SADDLE
+                        pixelclass[i, j] = CellType.SADDLE
                         saddleidx[i, j] = count_n
                         count_n += 1
                         count_p += (Nc / 2 - 1)
@@ -528,7 +635,7 @@ class ThalwegNetwork:
         # we go through each point and check its elevation against its neighbours
         for i in range(m):
             for j in range(n):
-                if (pixelclass[i,j] == df.SLOPE):
+                if (pixelclass[i,j] == CellType.REGULAR):
                     z = self.terrain.dtm[i,j]
                     ldr = self.terrain.neighbour[i,j]
                     nv = len(ldr)
@@ -551,13 +658,12 @@ class ThalwegNetwork:
                                 break
                                 
                     if delta_moins == 0: #classified as a pit
-                        pixelclass[i,j] = df.PIT
+                        pixelclass[i,j] = CellType.PIT
                         self.nodedict[self.nodekey] = {
                             'ij': (i,j),
                             'z': self.terrain.dtm[i,j],
-                            'ridge': [],
-                            'thalweg': [],
-                            'type': df.PIT
+                            'line': [],
+                            'type': CellType.PIT
                         }
                         self.nodekey += 1
 
@@ -569,9 +675,8 @@ class ThalwegNetwork:
         # add the virtual pit
         self.nodedict[-1] = {
             'ij' : [],
-            'thalweg' : [], 
-            'ridge' : [],
-            'type' : df.PIT,
+            'line' : [],
+            'type' : CellType.PIT,
             'z' : self.terrain.nodata
         }
 
@@ -598,7 +703,7 @@ class ThalwegNetwork:
         # we go through each point and check its elevation against its neighbours
         for i in range(m):
             for j in range(n):
-                if (pixelclass[i,j] == df.SLOPE):
+                if (pixelclass[i,j] == CellType.REGULAR):
                     z = self.terrain.dtm[i,j]
                     ldr = self.terrain.neighbour[i,j]
                     nv = len(ldr)
@@ -620,19 +725,17 @@ class ThalwegNetwork:
                                 break
                                 
                     if delta_plus == 0: #classified as a peak
-                        pixelclass[i,j] = df.PEAK
+                        pixelclass[i,j] = CellType.PEAK
                         self.nodedict[self.nodekey] = {
                             'ij': (i,j),
                             'z': self.terrain.dtm[i,j],
-                            'ridge': [],
-                            'thalweg': [],
-                            'type': df.PEAK
+                            'line': [],
+                            'type': CellType.PEAK
                         }
                         self.nodeidx[(i,j)] = self.nodekey
                         self.nodekey += 1
 
-    #creation of the thalweg dictionary
-    def createThalwegs(self, correction = True):
+    def createThalwegs(self, correction: "bool" = True) -> None:
         """
         Computation of thalwegs starting from saddles. Thalwegs do not overlap or
         go through saddles. If two thalwegs join, a confluence is inserted and a
@@ -652,230 +755,225 @@ class ThalwegNetwork:
         None.
 
         """
-        # no thalwegkey 0 because key sign indicates direction
-        thalwegkey=1
-        nextthalweg = thalwegkey + 1
+        # no linekey 0 because key sign indicates direction
+        self.linekey = 1
         self.floorkey={}
         
         # thalwegs all start at saddles
-        saddlelist = [i for i in self.nodedict if self.nodedict[i]['type'] == df.SADDLE]
+        saddlelist = [i for i in self.nodedict if self.nodedict[i]['type'] & CellType.SADDLE_FLAG]
         for ipt in saddlelist:
             pt = self.nodedict[ipt]
-#            if ipt>14:
-#                continue
-#            print('pass ', ipt)
-            linelist = pt['line']
+            linelist = pt['criticalline']
             for l in linelist:
                 if l[2] != -1: # if the line is not a thalweg
                     continue
-                    
                 polylist = l[0:2] # the first two points are already computed
-                (i,j) = polylist[1]
-#                print('creating thalweg', thalwegkey, i,j)
-                keepgoing = True # no node yet
-                outbound = False # not out of the terrain
-                endindex = -1
-                # check if we are out of the domain or on a node
-                if self.terrain.isInside(i,j):
-                    if self.terrain.pixelclass[i,j] == df.SLOPE:
-                        keepgoing = True
-                        self.terrain.pixelclass[i,j] = df.THALWEG
-                        self.floorkey[i,j] = thalwegkey
+                self.traceLineDown(ipt, polylist, correction)
+
+    def traceLineDown(self, ipt: "int", polylist: "list", correction: "bool" = True, celltype: "CellType" = CellType.THALWEG) -> None:
+        pt = self.nodedict[ipt]
+        (i,j) = polylist[-1]
+        keepgoing = True # no node yet
+        outbound = False # not out of the terrain
+        endindex = -1
+        nextthalweg = self.linekey + 1
+        # check if we are out of the domain or on a node
+        if self.terrain.isInside(i,j):
+            if self.terrain.pixelclass[i,j] == CellType.REGULAR:
+                keepgoing = True
+                self.terrain.pixelclass[i,j] = celltype
+                self.floorkey[i,j] = self.linekey
+            elif len(polylist) > 1:
+                keepgoing = False
+        else:
+            keepgoing = False
+            outbound = True # we’ll connect the thalweg to the virtual pit
+        # if not a node and inbound, we look for the next point
+        oldlag = 0
+        oldldr = (0,0)
+        while keepgoing:
+            ldr = self.terrain.neighbour[i,j]
+            v = self.terrain.getNeighbourHeights(i, j)
+            z = self.terrain.dtm[i,j]
+
+            # gradient computation
+            # gradLength does not compute the gradient for each triangle
+            # but the dz for each node along an edge and 3/2dz for each
+            # node along a diagonal
+            dz = df.gradLength(z, v, ldr)
+            minimum = 1
+            kmin = -1
+            for k,value in enumerate(dz):
+                if value<minimum:
+                    minimum=value
+                    kmin=k
+                elif value==minimum:
+                    if df.lexicoSign(ldr[k][0]-ldr[kmin][0], ldr[k][1]-ldr[kmin][1])<0:
+                        minimum=value
+                        kmin=k
+
+            # the steepest downward gradient is for v[kmin]
+            # we check if we need to modify it according to the lag
+            
+            ########### beginning of the correction block #############
+            if correction:            
+                # there are two possible triangles, one on each side of the edge
+                # we first check in which triangle the gradient is
+                lag = 0
+                vleft = 0
+                vright = 0
+                kleft = kmin - 1
+                kright = kmin + 1
+                if kright == len(ldr):
+                    kright = 0
+                # cases where the diagonal does not connect to the node z
+                if abs(ldr[kmin][0]-ldr[kleft][0])+abs(ldr[kmin][1]-ldr[kleft][1]) == 1:
+                    vleft = v[kleft] - z
+                if abs(ldr[kmin][0]-ldr[kright][0])+abs(ldr[kmin][1]-ldr[kright][1]) == 1:
+                    vright = v[kright] - z
+
+                if vleft == vright or min(vleft, vright) >= 0: # no lag, it goes along ldr[kmin]
+                    lag = 0
+                else: # either to the left or the right triangle
+                    k1 = kmin
+                    if vleft < vright: # if the left point is lower, gradient is on the left
+                        k1 = kleft
+                        v1 = vleft
+                    if vright < vleft:
+                        k1 = kright
+                        v1 = vright
+                    # here we compute the gradient direction by solving a 2x2 system
+                    # may be simplified noting that one coefficient is zero, others are ones
+                    # but would need to separate all cases
+                    x1 = ldr[kmin][0]
+                    y1 = ldr[kmin][1]
+                    x2 = ldr[k1][0]
+                    y2 = ldr[k1][1]
+                    z1 = v[kmin] - z
+                    z2 = v1
+                    det = 1/(x1*y2 - x2*y1)
+                    a = det*(y2*z1 - y1*z2)
+                    b = det*(x1*z2 - x2*z1)
+                    # the gradient direction is given by (a,b)
+                    # now we compute the lag
+                    # the lag is the difference between ldr[kmin] and (a,b)
+                    if (ldr[kmin][0] == ldr[k1][0]): # compute b for a = 1
+                        b = -b/a
+                        a = ldr[kmin][0]
+                        if abs(b) < abs(a):
+                            lag = b - ldr[kmin][1]
+                        else:
+                            lag = 0
                     else:
-                        keepgoing = False
+                        a = -a/b
+                        b = ldr[kmin][1]
+                        if abs(a) < abs(b):
+                            lag = a - ldr[kmin][0]
+                        else: 
+                            lag = 0
+                    # if we keep going the same way, correct with the lag
+                    if (ldr[kmin] == oldldr):
+                        lag += oldlag
+                        if lag > 0.5:
+                            kmin = k1
+                            lag -= 1
+                        if lag < -0.5:
+                            kmin = k1
+                            lag += 1
+                    oldldr = ldr[kmin]
+                    oldlag = lag
+
+            ############# end of the correction block #################
+
+            i += ldr[kmin][0]
+            j += ldr[kmin][1]
+#                    print(i,j)
+       
+            # check again if the point is a node or out
+            if self.terrain.isInside(i,j):
+                if self.terrain.pixelclass[i,j] == CellType.REGULAR:
+                    keepgoing = True
+                    self.terrain.pixelclass[i,j] = celltype
+                    self.floorkey[i,j] = self.linekey
                 else:
                     keepgoing = False
-                    outbound = True # we’ll connect the thalweg to the virtual pit
-                # if not a node and inbound, we look for the next point
-                oldlag = 0
-                oldldr = (0,0)
-                while keepgoing:
-                    ldr = self.terrain.neighbour[i,j]
-                    v = self.terrain.getNeighbourHeights(i, j)
-                    z = self.terrain.dtm[i,j]
+                    outbound = False
+            else:
+                keepgoing = False
+                outbound = True
 
-                    # gradient computation
-                    # gradLength does not compute the gradient for each triangle
-                    # but the dz for each node along an edge and 3/2dz for each
-                    # node along a diagonal
-                    dz = df.gradLength(z, v, ldr)
-                    minimum = 1
-                    kmin = -1
-                    for k,value in enumerate(dz):
-                        if value<minimum:
-                            minimum=value
-                            kmin=k
-                        elif value==minimum:
-                            if df.lexicoSign(ldr[k][0]-ldr[kmin][0], ldr[k][1]-ldr[kmin][1])<0:
-                                minimum=value
-                                kmin=k
+            # this point is on the thalweg and is added to the polyline
+            polylist.append((i,j))
 
-                    # the steepest downward gradient is for v[kmin]
-                    # we check if we need to modify it according to the lag
-                    
-                    ########### beginning of the correction block #############
-                    if correction:            
-                        # there are two possible triangles, one on each side of the edge
-                        # we first check in which triangle the gradient is
-                        lag = 0
-                        vleft = 0
-                        vright = 0
-                        kleft = kmin - 1
-                        kright = kmin + 1
-                        if kright == len(ldr):
-                            kright = 0
-                        # cases where the diagonal does not connect to the node z
-                        if abs(ldr[kmin][0]-ldr[kleft][0])+abs(ldr[kmin][1]-ldr[kleft][1]) == 1:
-                            vleft = v[kleft] - z
-                        if abs(ldr[kmin][0]-ldr[kright][0])+abs(ldr[kmin][1]-ldr[kright][1]) == 1:
-                            vright = v[kright] - z
-    
-                        if vleft == vright or min(vleft, vright) >= 0: # no lag, it goes along ldr[kmin]
-                            lag = 0
-                        else: # either to the left or the right triangle
-                            k1 = kmin
-                            if vleft < vright: # if the left point is lower, gradient is on the left
-                                k1 = kleft
-                                v1 = vleft
-                            if vright < vleft:
-                                k1 = kright
-                                v1 = vright
-                            # here we compute the gradient direction by solving a 2x2 system
-                            # may be simplified noting that one coefficient is zero, others are ones
-                            # but would need to separate all cases
-                            x1 = ldr[kmin][0]
-                            y1 = ldr[kmin][1]
-                            x2 = ldr[k1][0]
-                            y2 = ldr[k1][1]
-                            z1 = v[kmin] - z
-                            z2 = v1
-                            if z1 != self.terrain.nodata and z2 != self.terrain.nodata:
-                                det = 1./(x1*y2 - x2*y1)
-                                a = det*(y2*z1 - y1*z2)
-                                b = det*(x1*z2 - x2*z1)
-                                # the gradient direction is given by (a,b)
-                                # now we compute the lag
-                                # the lag is the difference between ldr[kmin] and (a,b)
-                                if (ldr[kmin][0] == ldr[k1][0]): # compute b for a = 1
-                                    b = -b/a
-                                    a = ldr[kmin][0]
-                                    if abs(b) < abs(a):
-                                        lag = b - ldr[kmin][1]
-                                    else:
-                                        lag = 0
-                                else:
-                                    a = -a/b
-                                    b = ldr[kmin][1]
-                                    if abs(a) < abs(b):
-                                        lag = a - ldr[kmin][0]
-                                    else: 
-                                        lag = 0
-                            else:
-                                lag = 0
-                            # if we keep going the same way, correct with the lag
-                            if (ldr[kmin] == oldldr):
-                                lag += oldlag
-                                if lag > 0.5:
-                                    kmin = k1
-                                    lag -= 1
-                                if lag < -0.5:
-                                    kmin = k1
-                                    lag += 1
-                            oldldr = ldr[kmin]
-                            oldlag = lag
-
-                    ############# end of the correction block #################
-
-                    i += ldr[kmin][0]
-                    j += ldr[kmin][1]
-#                    print(i,j)
-               
-                    # check again if the point is a node or out
-                    if self.terrain.isInside(i,j):
-                        if self.terrain.pixelclass[i,j] == df.SLOPE:
-                            keepgoing = True
-                            self.terrain.pixelclass[i,j] = df.THALWEG
-                            self.floorkey[i,j] = thalwegkey
-                        else:
-                            keepgoing = False
-                            outbound = False
-                    else:
-                        keepgoing = False
-                        outbound = True
-
-                    # this point is on the thalweg and is added to the polyline
-                    polylist.append((i,j))
-
-                # if we reach a node
-                # the thalweg id is marked <0 at its end point
-                if outbound:
-                    z=self.terrain.nodata
-                    self.nodeidx[(i,j)] = -1 # virtual pit
-                    self.nodedict[-1]['ij'].append((i,j))
-                    endindex = -1
-                else:
-                    if self.terrain.pixelclass[i,j] == df.THALWEG:
-                        # if we reach an existing thalweg, we have to create a confluence
-                        idthalweg = self.floorkey[i,j]
-                        # we create the new node
-                        endindex = self.nodekey
-                        self.nodeidx[(i,j)] = self.nodekey
-                        self.nodedict[self.nodekey] = {
-                            'ij' : (i,j),
-                            'z': self.terrain.dtm[i,j],
-                            'thalweg' : [-idthalweg, nextthalweg],
-                            'ridge' : [],
-                            'type' : df.CONFLUENCE
-                        }
-                        self.terrain.pixelclass[i,j] = df.CONFLUENCE
-                        self.nodekey += 1
-                        # split the existing thalweg in two
-                        t = self.thalwegdict[idthalweg]
-                        ptlist = t['polyline']
-                        iend = t['end']
-                        icfl = ptlist.index((i,j))
-                        ptlist1 = ptlist[:icfl+1]
-                        ptlist2 = ptlist[icfl:]
-                        # modify the first thalweg to stop at the confluence
-                        t['polyline'] = ptlist1
-                        t['end'] = endindex
-                        # create a new thalweg
-                        self.thalwegdict[nextthalweg] = {
-                            'start' : endindex,
-                            'polyline' : ptlist2,
-                            'end' : iend
-                        }
-                        # we update the node at the end of the new thalweg
-                        ndt = self.nodedict[iend]['thalweg']
-                        ndt.remove(-idthalweg)
-                        ndt.append(-nextthalweg)
-                        # we update floorkey with nextthalweg
-                        for k in ptlist2[1:-1]:
-                            self.floorkey[k] = nextthalweg
-                        nextthalweg += 1
-# this can be simplified, all non thalweg cases are treated the same way
-                    elif self.terrain.pixelclass[i,j] == df.CONFLUENCE: 
-                        # reach a confluence: add the thalweg to the confluence
-                        endindex = self.nodeidx[(i,j)]
-                    elif self.terrain.pixelclass[i,j] == df.SADDLE:
-                        endindex = self.nodeidx[(i,j)]
-                    elif self.terrain.pixelclass[i,j] == df.PIT:
-                        endindex = self.nodeidx[(i,j)]
-
-                # the last point is a critical point
-                # we add its index to the thalweglist
-                pt['thalweg'].append(thalwegkey)
-                self.nodedict[endindex]['thalweg'].append(-thalwegkey)
-                self.thalwegdict[thalwegkey]={
-                    'start' : ipt,
-                    'polyline' : polylist,
-                    'end' : endindex,
+        # if we reach a node
+        # the thalweg id is marked <0 at its end point
+        if outbound:
+            z=self.terrain.nodata
+            self.nodeidx[(i,j)] = -1 # virtual pit
+            self.nodedict[-1]['ij'].append((i,j))
+            endindex = -1
+        else:
+#            if CellType.isSurfaceWatercourse(self.terrain.pixelclass[i,j]):
+#            if CellType.isThalweg(self.terrain.pixelclass[i,j]):
+            if self.isDownslopeLine(self.terrain.pixelclass[i,j]):
+                # if we reach an existing thalweg, we have to create a confluence
+                idthalweg = self.floorkey[i,j]
+                # we create the new node
+                endindex = self.nodekey
+                self.nodeidx[(i,j)] = self.nodekey
+                self.nodedict[self.nodekey] = {
+                    'ij' : (i,j),
+                    'z': self.terrain.dtm[i,j],
+                    'line' : [-idthalweg, nextthalweg],
+                    'type' : CellType.TJUNCTION
                 }
-#                    print(ipt, endindex, pt)
-#                    l[3] = thalwegkey # we don't use it
-                thalwegkey = nextthalweg
+                self.terrain.pixelclass[i,j] = CellType.TJUNCTION
+                self.nodekey += 1
+                # split the existing thalweg in two
+                t = self.linedict[idthalweg]
+                ptlist = t['polyline']
+                iend = t['end']
+                icfl = ptlist.index((i,j))
+                ptlist1 = ptlist[:icfl+1]
+                ptlist2 = ptlist[icfl:]
+                # modify the first thalweg to stop at the confluence
+                t['polyline'] = ptlist1
+                t['end'] = endindex
+                # create a new thalweg
+                self.linedict[nextthalweg] = {
+                    'start' : endindex,
+                    'polyline' : ptlist2,
+                    'end' : iend,
+                    'type' : CellType.THALWEG
+                }
+                # we update the node at the end of the new thalweg
+                ndt = self.nodedict[iend]['line']
+                ndt.remove(-idthalweg)
+                ndt.append(-nextthalweg)
+                # we update floorkey with nextthalweg
+                for k in ptlist2[1:-1]:
+                    self.floorkey[k] = nextthalweg
                 nextthalweg += 1
+            elif CellType.isCourseNode(self.terrain.pixelclass[i,j]):
+                # reach a confluence: add the thalweg to the confluence
+                endindex = self.nodeidx[(i,j)]
+#                    elif self.terrain.pixelclass[i,j] == CellType.SADDLE:
+#                        endindex = self.nodeidx[(i,j)]
+#                    elif self.terrain.pixelclass[i,j] == CellType.PIT:
+#                        endindex = self.nodeidx[(i,j)]
 
+        # the last point is a critical point
+        # we add its index to the thalweglist
+        pt['line'].append(self.linekey)
+        self.nodedict[endindex]['line'].append(-self.linekey)
+        self.linedict[self.linekey]={
+            'start' : ipt,
+            'polyline' : polylist,
+            'end' : endindex,
+            'type' : celltype
+        }
+        self.linekey = nextthalweg
+        
     # if it is not, we should use something like Freeman chaincode to order points along
     # the domain boundary
     def orderThalwegsAroundNodes(self):
@@ -896,11 +994,11 @@ class ThalwegNetwork:
         for ipt, pt in self.nodedict.items():
             # -1 is the id of the virtual pit outside the domain
             if ipt == -1: # to be handled separately
-                thalweglist = pt['thalweg']
+                thalweglist = pt['line']
                 boundary = self.terrain.boundary
                 inbound = self.terrain.inbound
                 try:
-                    thalweglist.sort(key = lambda it: df.getBoundaryIndex(self.thalwegdict[abs(it)]['polyline'], boundary, inbound))
+                    thalweglist.sort(key = lambda it: df.getBoundaryIndex(self.linedict[abs(it)]['polyline'], boundary, inbound))
                 except:
                     print('Exception orderThalwegs around virtual pit')
                     break
@@ -912,9 +1010,9 @@ class ThalwegNetwork:
                 (i,j) = pt['ij']
                 neighbours = [(i+di, j+dj) for (di,dj) in df.ldr8]
                 # arrange the lines in the same order as the neighbours
-                thalweglist = pt['thalweg']
+                thalweglist = pt['line']
                 try:
-                    thalweglist.sort(key = lambda it: neighbours.index(self.thalwegdict[abs(it)]['polyline'][df.getSecondPointPosition(it)]))
+                    thalweglist.sort(key = lambda it: neighbours.index(self.linedict[abs(it)]['polyline'][df.getSecondPointPosition(it)]))
                 except ValueError:
                     print('Exception raised in orderThalwegsAroundNodes', ipt, pt, neighbours)
 
@@ -951,7 +1049,7 @@ class ThalwegNetwork:
         keepgoing = True
         thalwegring = []
         while keepgoing:
-            t = self.thalwegdict[currentthalweg]
+            t = self.linedict[currentthalweg]
             if currentnode == t['start']:
                 nextnode = t['end']
                 thalwegring.append(currentthalweg)
@@ -963,7 +1061,8 @@ class ThalwegNetwork:
 
     #        print(currentthalweg)
             currentnode = nextnode
-            thalweglist = [abs(t) for t in self.nodedict[currentnode]['thalweg']]
+#            thalweglist = [abs(t) for t in self.nodedict[currentnode]['line'] if self.linedict[abs(t)]['type'] & CellType.SURFACE_FLAG]
+            thalweglist = [abs(t) for t in self.nodedict[currentnode]['line'] if self.isDownslopeLine(self.linedict[abs(t)]['type'])]
             thalwegpos = thalweglist.index(currentthalweg)
             currentthalweg = thalweglist[thalwegpos - 1]
             keepgoing = not ((currentnode == idnode) and (currentthalweg == idthalweg))
@@ -1061,17 +1160,17 @@ class ThalwegNetwork:
                 # get the list of points forming the ring
                 for it in tring:
                     if it > 0:
-                        t = self.thalwegdict[it]
+                        t = self.linedict[it]
                         if pring:
                             pring.extend(t['polyline'][1:])
                         else:
                             pring.extend(t['polyline'][:])
                     else:
-                        t = self.thalwegdict[-it]
+                        t = self.linedict[-it]
                         if t['end'] == -1:
         #                        print('it', it, pring, t['polyline'][-1])
                             if not pring:
-                                lastpoint = self.thalwegdict[abs(tring[-1])]['polyline'][-1]
+                                lastpoint = self.linedict[abs(tring[-1])]['polyline'][-1]
                                 istart = self.terrain.boundary.index(lastpoint)
                                 iend = self.terrain.boundary.index(t['polyline'][-1])
                             else:
@@ -1104,7 +1203,7 @@ class ThalwegNetwork:
             
             danglingthalweg = hill['dangling']
             for it in danglingthalweg:
-                t = self.thalwegdict[it]
+                t = self.linedict[it]
                 polyline = t['polyline'][:-1]
                 for p in polyline:
                     danglingmap[p] = it
@@ -1120,7 +1219,7 @@ class ThalwegNetwork:
         in the lists. The hill also contains a list of dangling thalwegs, thalwegs
         that do not form a loop.
         The function also adds a pointer to the left and right hill to thalwegs
-        in thalwegdict. For a dangling thalweg, the left and right hills are the
+        in linedict. For a dangling thalweg, the left and right hills are the
         same.
 
         Returns
@@ -1129,19 +1228,20 @@ class ThalwegNetwork:
 
         """
         # initialise the link from thalweg to hill
-        for it in self.thalwegdict:
-            t = self.thalwegdict[it]
+        for it in self.linedict:
+            t = self.linedict[it]
             t['lefthill'] = None
             t['righthill'] = None
     
         self.hilldict = {}
         hillkey = 0
-        saddlelist = [i for i in self.nodedict if self.nodedict[i]['type'] == df.SADDLE and self.nodedict[i]['z']>self.terrain.nodata]
+        saddlelist = [i for i in self.nodedict if self.nodedict[i]['type'] == CellType.SADDLE and self.nodedict[i]['z']>self.terrain.nodata]
     
         for ipt in saddlelist:
             pt = self.nodedict[ipt]
             # we get the list of thalwegs
-            thalweglist = pt['thalweg']
+#            thalweglist = [i for i in pt['line'] if self.linedict[abs(i)]['type'] & CellType.THALWEG_FLAG]
+            thalweglist = [i for i in pt['line'] if self.isDownslopeLine(self.linedict[abs(i)]['type'])]
             # we need at least two thalwegs to create a hill
             # if we don't have this, there's a problem in the data
             # a saddle always has two thalwegs at least
@@ -1152,7 +1252,7 @@ class ThalwegNetwork:
             for t in thalweglist:
                 # computes the ring and dangling thalwegs starting from t at ipt
                 abst = abs(t)
-                if self.thalwegdict[abst]['righthill']:
+                if self.linedict[abst]['righthill']:
                     continue
                 thalwegring, thalwegline = self.getThalwegRing(ipt, t)
                 # if t is a dangling thalweg, no new hill is created because there's none
@@ -1163,7 +1263,7 @@ class ThalwegNetwork:
                 # we compare the bounding boxes to check if the first ring is the boundary
                 arealist = []
                 for ring in thalwegring:
-                    pointlist = set(reduce(lambda a,b:a+b, [self.thalwegdict[abs(tt)]['polyline'] for tt in ring]))
+                    pointlist = set(reduce(lambda a,b:a+b, [self.linedict[abs(tt)]['polyline'] for tt in ring]))
                     xmin = min(pointlist, key = lambda a: a[0])[0]
                     xmax = max(pointlist, key = lambda a: a[0])[0]
                     ymin = min(pointlist, key = lambda a: a[1])[1]
@@ -1182,18 +1282,18 @@ class ThalwegNetwork:
                                           'dangling': thalwegline}
                 for tt in border:
                     if tt > 0:
-                        self.thalwegdict[tt]['righthill'] = hillkey
+                        self.linedict[tt]['righthill'] = hillkey
                     else:
-                        self.thalwegdict[-tt]['lefthill'] = hillkey
+                        self.linedict[-tt]['lefthill'] = hillkey
                 for r in holes:
                     for tt in r:
                         if tt > 0:
-                            self.thalwegdict[tt]['righthill'] = hillkey
+                            self.linedict[tt]['righthill'] = hillkey
                         else:
-                            self.thalwegdict[-tt]['lefthill'] = hillkey
+                            self.linedict[-tt]['lefthill'] = hillkey
                 for tt in thalwegline:
-                    self.thalwegdict[tt]['lefthill'] = hillkey
-                    self.thalwegdict[tt]['righthill'] = hillkey
+                    self.linedict[tt]['lefthill'] = hillkey
+                    self.linedict[tt]['righthill'] = hillkey
                 hillkey += 1
 
         # correction of a bug from hill computation where some hills were computed twice
@@ -1201,10 +1301,36 @@ class ThalwegNetwork:
         for ihill in self.hilldict:
             tlist = self.hilldict[ihill]['boundary']
             for it in tlist:
-                t = self.thalwegdict[abs(it)]
+                t = self.linedict[abs(it)]
                 if t['lefthill'] != ihill and t['righthill'] != ihill:
                     nopeak.add(ihill)
                     break
         for i in nopeak:
             del self.hilldict[i]
+            
+    def getNeighbouringHills(self, idsaddle):
+        """
+        Return the set of hills around a saddle. As a set, hills are not ordered
+        around the saddle.
 
+        Parameters
+        ----------
+        idsaddle : integer
+            id of the saddle.
+
+        Returns
+        -------
+        hills : set of integers
+            Set containing the ids of hills around idsaddle.
+
+        """
+        saddle = self.nodedict[idsaddle]
+        thalwegs = saddle['line']
+        hills = set()
+        for it in thalwegs:
+            it = abs(it)
+            t = self.linedict[it]
+            if t['type'] & CellType.THALWEG:
+                hills.add(t['lefthill'])
+                hills.add(t['righthill'])
+        return hills
