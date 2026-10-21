@@ -42,8 +42,7 @@ def readRasterDTM(filename, terrain):
         minvalue = band.GetMinimum()
         maxvalue = band.GetMaximum()
         nodata = band.GetNoDataValue()
-    print("in readRasterDTM", nodata, minvalue)
-    if not nodata or nodata > minvalue:
+    if not nodata or numpy.isnan(nodata) or nodata > minvalue:
         nodata = minvalue - 1
     else:
         if minvalue < nodata:
