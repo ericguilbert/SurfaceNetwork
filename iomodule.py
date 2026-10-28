@@ -42,16 +42,20 @@ def readRasterDTM(filename, terrain):
         minvalue = band.GetMinimum()
         maxvalue = band.GetMaximum()
         nodata = band.GetNoDataValue()
-    if not nodata or numpy.isnan(nodata) or nodata > minvalue:
-        nodata = minvalue - 1
-    else:
-        if minvalue < nodata:
-            print("in readRasterDTM: warning! minz < nodata")
+    print("in readRasterDTM", nodata, minvalue)
+    if not nodata or nodata > minvalue:
+        nodata = minvalue
+        
     print(terrain.m, 'rows', terrain.n, 'columns')
     print("minvalue =", minvalue, 'nodata =', nodata)
 
-    terrain.nodata = nodata
-    terrain.dtm = raster.ReadAsArray()
+    dtm = raster.ReadAsArray()
+    if not numpy.isnan(nodata):
+        dtm[dtm==nodata] = -numpy.inf
+    terrain.dtm = dtm
+    terrain.nodata = -numpy.inf
+    terrain.minz = minvalue
+    terrain.maxz = maxvalue
 
 # read a polygon from a geopackage
 def readGpkgPolygon(directory, filename):
@@ -290,8 +294,8 @@ def writeGpkgNode(nodedict, terrain, directory, nodename):
     nodelayer = nodefile.CreateLayer(nodename, crs, ogr.wkbPoint)
     
     nodelayer.CreateField(ogr.FieldDefn("id", ogr.OFTInteger))
-    nodelayer.CreateField(ogr.FieldDefn("i", ogr.OFTReal))
-    nodelayer.CreateField(ogr.FieldDefn("j", ogr.OFTReal))
+    nodelayer.CreateField(ogr.FieldDefn("i", ogr.OFTInteger))
+    nodelayer.CreateField(ogr.FieldDefn("j", ogr.OFTInteger))
     nodelayer.CreateField(ogr.FieldDefn("z", ogr.OFTReal))
     fieldt = ogr.FieldDefn("line", ogr.OFTString)
     fieldt.SetWidth(128)
@@ -308,8 +312,8 @@ def writeGpkgNode(nodedict, terrain, directory, nodename):
 
         feature = ogr.Feature(layerdef)
         feature.SetField("id", id)
-        feature.SetField("i", i)
-        feature.SetField("j", j)
+        feature.SetField("i", int(i))
+        feature.SetField("j", int(j))
         feature.SetField("z", float(pss["z"]))
         feature.SetField("type", CellType.toText(pss['type']))
         feature.SetField("line", thalwegtxt)

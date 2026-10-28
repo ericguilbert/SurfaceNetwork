@@ -68,7 +68,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         end = perf_counter_ns()
         print("Hill computation time:", end - start)
         start = perf_counter_ns()
-        terrain.saddleAndThalwegAwareDiagonalisation()
+        terrain.saddleAndThalwegAwareDiagonalisation(self.pixelclass)
         end = perf_counter_ns()
         print("Diagonalisation time:", end - start)
         start = perf_counter_ns()
@@ -101,8 +101,6 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         self.computeThalwegDales()
         end = perf_counter_ns()
         print("Dale computation time:", end - start)
-        return
-#        self.reassignmentnode()
     
     def isDownslopeLine(self, cellvalue: "CellType") -> bool:
         """
@@ -122,61 +120,6 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         """
         return cellvalue & CellType.SURFACE_FLAG and cellvalue & CellType.LINE
 
-    def flowcomputedict(self):
-        """
-        calculates the flow dictionary, including surface flows and flows through culverts
-
-        Parameters
-        ----------
-        None. 
-        
-        Returns
-        -------
-        None.
-
-        """
-        self.flowdict = self.thalwegdict.copy()
-        max_thalweg_key = max(self.thalwegdict.keys())
-        for key in self.flowdict:
-            self.flowdict[key]['type'] = 'thalweg'
-        for key, culvert_info in self.culvertdict.items():
-            max_thalweg_key += 1
-            self.flowdict[max_thalweg_key] = culvert_info
-            self.flowdict[max_thalweg_key]['type'] = 'culvert'
-            self.flowdict[max_thalweg_key]['dale'] = -999
-            
-    def reassignmentnode(self) :
-        """
-        reassigns the node type according to the flow direction 
-
-        Parameters
-        ----------
-        None. 
-        
-        Returns
-        -------
-        None.
-
-        """
-        for ipt, pt in self.nodedict.items():
-            downstream = self.downstreamThalwegsC(ipt)
-            downlength = len(downstream)
-            upstream = self.upstreamThalwegsC(ipt)
-            uplength = len(upstream)
-            if uplength == 0 and downlength > 0 :
-                self.nodedict[ipt]['fluence'] = 1 ###Spring
-            elif uplength > 0 and downlength > 1 :
-                self.nodedict[ipt]['fluence'] = 2 ###Diffluence
-            elif uplength > 1 and downlength == 1 :
-                self.nodedict[ipt]['fluence'] = 3 ###Confluence
-            elif uplength == 1 and downlength == 1 :
-                self.nodedict[ipt]['fluence'] = 4 ###Transfluence
-            elif uplength == 1 and downlength == 1 :
-                self.nodedict[ipt]['fluence'] = 5 ###Sink (Doesn't exist in our case)
-            else :
-                self.nodedict[ipt]['fluence'] = 6 ###Other (Peak and RJunction)
-        
-        
     def computeCulvertInletsAndOutlets(self, culvert) :
         """
         Calculates connection points between thalwegs and culverts 
@@ -209,51 +152,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         inlet = T2[0]
         outlet = T2[1]
         
-        # node =  []
-        # for i in range(len(inlet)) :
-        #     node.append(inlet[i])
-        #     node.append(outlet[i])
-        
         return inlet, outlet
-
-    def computeBifurcation(self) :
-        """
-        Calculates connection points between thalwegs and culverts 
-
-        Parameters
-        ----------
-        fichier :
-            path to culvert file
-            
-        Returns
-        -------
-        None.
-
-        """
-        
-        lignes_ponceaux = self.culvert
-        ponceaux = self.terrain.pixelCulverts(lignes_ponceaux)   ##Pixelation of culverts
-        ponceaux_avec_z = ponceaux[0]
-        ponceaux_avec_z_prolonges = ponceaux[1]
-
-        T = self.InOutCulverts(ponceaux_avec_z, ponceaux_avec_z_prolonges)  ##Calculation of culvert inlets and outlets
-        entrees_candidates = T[1]
-        sorties_candidates = T[2]
-        
-        T1 = self.entrees_sorties_sansZ(entrees_candidates, sorties_candidates)
-        entrees_candidatess = T1[0]
-        sorties_candidatess = T1[1]
-
-        T2 = self.entrees_sorties_finaux(entrees_candidatess, sorties_candidatess, sorties_candidates)
-        bifurcations_entrees = T2[1]
-        bifurcations_sorties = T2[3]
-        
-        bifurcations =  []
-        for i in range(len(bifurcations_entrees)) :
-            bifurcations.append(bifurcations_entrees[i])
-            bifurcations.append(bifurcations_sorties[i])
-        
-        return bifurcations_entrees, bifurcations_sorties, bifurcations
 
     def createCulverts(self, inlet, outlet):
         """
@@ -273,8 +172,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         
         # matrix dimension 
         A = self.terrain.dtm
-        pixelclass = self.terrain.pixelclass
-        
+        pixelclass = self.pixelclass
         
         # self.nodekey contains the index of the next node
         # self.linekey contains the index of the next line
@@ -309,7 +207,6 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
                 }
                 self.nodekey += 1
             pixelclass[i,j] = pixelclass[i,j] | CellType.CULVERTNODE_FLAG
-                # pixelclass[i, j] = df.BIFURCATION   #The reason why we don't add it in pixelclass is to preserve the fact that it is a thalweg dividing in two
 
             point = outlet[iline] # take the end point of the culvert
             i = point[0]
@@ -347,7 +244,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
 
     def correctThalwegs(self) :
         """
-        Allows you to correct thalwegs that have been split in two by culverts 
+        Correct thalwegs that have been split in two by culverts 
         by inserting a node and then having two thalwegs instead of one 
 
         Parameters
@@ -372,7 +269,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
             i = node['ij'][0]
             j = node['ij'][1]
             
-            if CellType.isThalweg(self.terrain.pixelclass[i,j]):
+            if CellType.isThalweg(self.pixelclass[i,j]):
                 
                 idthalweg = self.floorkey[i,j]
                 node['line'].append(-idthalweg)
@@ -407,63 +304,8 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
                 for k in ptlist2[1:-1]:
                     self.floorkey[k] = self.linekey
                 self.linekey += 1
-                self.terrain.pixelclass[i,j] = node['type']
+                self.pixelclass[i,j] = node['type']
 
-    def computeCulverts(self) :
-        """
-        Calculates the new list of culverts with the new entry and exit points
-
-        Parameters
-        ----------
-        fichier :
-            path to culvert file
-
-        Returns
-        -------
-        None.
-
-        """
-        
-        culvertkey = 1
-        # floorkey={}
-        B = self.computeBifurcation()
-        b1 = B[0]
-        b2 = B[1]
-        L = self.newCulverts(b1, b2)
-        culverts = L[0]
-        for culvertt in culverts :
-            polylist = []    # initiate the list of polylists to be added to the culvert dictionary
-            # extract the i,j from the inlets and outlets
-            i_in = culvertt[0][0]      
-            j_in = culvertt[0][1]
-            i_out = culvertt[-1][0] 
-            j_out = culvertt[-1][1]
-            # floorkey[i_in, j_in] = culvertkey
-            
-            # loop to fill the polylist with its corresponding values
-            for point in culvertt :
-                i = point[0]
-                j = point[1]
-                # floorkey[i,j] = culvertkey
-                polylist.append((i,j))
-            
-            # retrieve the indices of the inputs as startindex and the indices of the outputs as endindex
-            startindex = self.nodeidx[(i_in,j_in)]
-            endindex = self.nodeidx[(i_out,j_out)]
-            
-            # store culvert indices in nodedict for points that allow water to pass through culverts
-            self.nodedict[startindex]['culvert'].append(culvertkey)
-            self.nodedict[endindex]['culvert'].append(-culvertkey)
-            
-            # create the culvert dictionary
-            self.culvertdict[culvertkey]={
-                'start' : startindex,
-                'polyline' : polylist,
-                'end' : endindex,
-            }
-            culvertkey += 1   
-        
-    
     def addNewWatercourses(self, correction=True):
         
         culvert = [k for k in self.linedict if self.linedict[k]['type'] & CellType.CULVERT_FLAG]
@@ -488,71 +330,6 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
             self.traceLineDown(inode, polylist, correction, CellType.SURFACE)
             pt['type'] |= CellType.TJUNCTION_FLAG
 
-                                    
-    def insertIntoHills(self, i_in, j_in) :
-        ###1###CORRECTION OF THALWEGS THAT HAVE BEEN CORRECTED
-        key = self.nodeidx[(i_in, j_in)]
-        if len(self.nodedict[key]['thalweg']) == 2 :
-            if self.nodedict[key]['thalweg'][0] < 0 :
-                thalwegsearch = - self.nodedict[key]['thalweg'][0]
-                print("thalwegsearch :",thalwegsearch)
-                nextthalwegsearch = self.nodedict[key]['thalweg'][1]
-                print("nextthalwegsearch :",nextthalwegsearch)
-            elif self.nodedict[key]['thalweg'][0] > 0 :
-                thalwegsearch = - self.nodedict[key]['thalweg'][1]
-                print("thalwegsearch :",thalwegsearch)
-                nextthalwegsearch = self.nodedict[key]['thalweg'][0]
-                print("nextthalwegsearch :",nextthalwegsearch)
-            if self.thalwegdict[thalwegsearch]['righthill'] :
-                righthill = self.thalwegdict[thalwegsearch]['righthill']
-                print("righthill :", righthill)
-                if thalwegsearch in self.hilldict[righthill]['boundary']:
-                    boundary = self.hilldict[righthill]['boundary']
-                    indice_boundary = boundary.index(thalwegsearch)
-                    boundary.insert(indice_boundary + 1, nextthalwegsearch)
-                    self.thalwegdict[nextthalwegsearch]['righthill'] = righthill
-                if thalwegsearch in self.hilldict[righthill]['hole']:
-                    boundary = self.hilldict[righthill]['hole']
-                    indice_boundary = boundary.index(thalwegsearch)
-                    boundary.insert(indice_boundary + 1, nextthalwegsearch)
-                    self.thalwegdict[nextthalwegsearch]['righthill'] = righthill
-            if self.thalwegdict[thalwegsearch]['lefthill'] :
-                lefthill = self.thalwegdict[thalwegsearch]['lefthill']
-                print("lefthill :", lefthill)
-                if thalwegsearch in self.hilldict[lefthill]['boundary']:
-                    boundary = self.hilldict[lefthill]['boundary']
-                    indice_boundary = boundary.index(thalwegsearch)
-                    boundary.insert(indice_boundary + 1, nextthalwegsearch)
-                    self.thalwegdict[nextthalwegsearch]['lefthill'] = lefthill
-                if thalwegsearch in self.hilldict[lefthill]['hole']:
-                    boundary = self.hilldict[lefthill]['hole']
-                    indice_boundary = boundary.index(thalwegsearch)
-                    boundary.insert(indice_boundary + 1, nextthalwegsearch)
-                    self.thalwegdict[nextthalwegsearch]['lefthill'] = lefthill
-                
-    def correctHills(self, terrain, fichier):
-        B = self.computeBifurcation(terrain, fichier)
-        b1 = B[0]
-        b2 = B[1]
-        L = self.newCulverts(b1, b2)
-        culverts = L[0]
-        self.orderThalwegsAroundNodes()
-        for culvert in culverts :
-            i_in = culvert[0][0]      
-            j_in = culvert[0][1]
-            i_out = culvert[-1][0] 
-            j_out = culvert[-1][1]
-            if self.terrain.pixelclass2[i_in,j_in] == df.BIFURCATION:
-               self.insertIntoHills(i_in, j_in)
-
-            if self.terrain.pixelclass2[i_out,j_out] == df.BIFURCATION:
-               self.insertIntoHills(i_out, j_out)
-               key = self.nodeidx[(i_out, j_out)]
-               if len(self.nodedict[key]['thalweg']) == 1 :
-                   nextthalwegsearch = self.nodedict[key]['thalweg'][0]
-                   intersection = self.thalwegdict[nextthalwegsearch]['end']
-    
-    
     def InOutCulverts(self, ponceaux_avec_z, ponceaux_avec_z_prolonges) :
         """
         Compute inlets and outlets of culverts and return the list of culverts
@@ -770,18 +547,6 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
             for i, j in zip(i_min_s, j_min_s):
                 dist =+ df.calculate_distance(i, j, i_initial, j_initial)
                 distance_min_s.append(dist)
-            # plt.figure(figsize=(8, 8))
-            # plt.plot(distance , z_values, marker='o', label='Pixels du ponceau')
-            # plt.scatter(distance_min , z_min, marker='o', s=200, facecolors = 'none', edgecolors='red', linewidths=2, label='Entrées Candidates')
-            # plt.scatter(distance_max , z_max, marker='o', s=200, facecolors = 'none', edgecolors='orange', linewidths=2, label='Maximums (Route)')
-            # plt.scatter(distance_min_s , z_min_s, marker='o', s=200, facecolors = 'none', edgecolors='green', linewidths=2, label='Sorties Candidates')
-            # plt.xlabel('Distance along the culvert')
-            # plt.ylabel('Elevation Z')
-            # plt.title(f"Elevation profile along the culvert {l}")
-            # l = l+1
-            # plt.grid(True)
-            # plt.legend()
-            # plt.show()
             
         return entrees_candidates, sorties_candidates
                    
@@ -819,7 +584,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
                 sorties_candidatess.append(ponceau)
                 
         return entrees_candidatess, sorties_candidatess
-    
+        
     def entrees_sorties_finaux(self, entrees_candidatess, sorties_candidatess, sorties_candidates) : 
         """
         Calculates candidate inputs and candidate outputs without height
@@ -843,7 +608,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
         dictionnaire_entrees = {}
         transfluences_entrees = []
           
-        pixelclass = self.terrain.pixelclass
+        pixelclass = self.pixelclass
         for point in entrees_candidatess :
             ind = entrees_candidatess.index(point)
             k = point[0]
@@ -909,7 +674,7 @@ class TopoHydroNetwork(ExtendedSurfaceNetwork):
                     dictionnaire_sorties[ind] = intersect
     
         return transfluences_entrees, transfluences_sorties
-    
+
     def newCulverts(self, inlet, outlet) :
         """
         Updates the list of culverts by connecting them to the network's thalwegs

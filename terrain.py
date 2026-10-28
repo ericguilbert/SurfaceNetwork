@@ -11,6 +11,7 @@ import math
 
 from time import perf_counter_ns
 from collections import deque
+from scipy import ndimage
 import numpy as np
 
 from iomodule import readRasterDTM
@@ -25,7 +26,6 @@ class Terrain:
     # x_size, y_size: raster resolution
     # upper_left_x, upper_left_y: coordinates of top left corner
     # dtm: an mxn array of elevations
-    # pixelclass: an mxn array with a morphometric class for each pixel
     # neighbour: an mxn array with the list of neighbours of each pixel
     # diag: an m-1xn-1 array storing the orientation of each diagonal
 
@@ -35,7 +35,6 @@ class Terrain:
         Constructor defining a new terrain from a raster file.
         The constructor loads the heights in an array called dtm
         and initialises other arrays: 
-            pixelclass stores the morphometric class of each pixel,
             diag indicates the orientation of the diagonal, can be ±1.
             neighbour for each pixel contains the list of neighbouring pixels according to the triangulation
             boundary is a list of pixels located at the border outside the terrain
@@ -55,25 +54,8 @@ class Terrain:
         """
         readRasterDTM(chemin, self) # reads the file and fill dtm array and box
         print(self.m, 'rows', self.n, 'columns')
+        self.boundary, self.inbound = self.detectBoundary()
         print('nodata =', self.nodata)
-        outside = False
-        # fill the pixelclass array
-        # at the beginning all points are either slope or notin class
-        maskinside = self.dtm > self.nodata
-        self.pixelclass = np.where(maskinside, CellType.REGULAR, CellType.INNaN)
-        outside = np.any(~maskinside)
-
-        global nodata 
-        nodata = self.nodata
-                
-        # if there are no pixel outside, the boundary is the border of the raster
-        if not outside:
-            self.boundary = [(i, -1) for i in range(-1, self.m)] + [(self.m, j) for j in range(-1, self.n)] \
-                          + [(i, self.n) for i in range(self.m, -1, -1)] + [(-1, j) for j in range(self.n, -1, -1)]
-            self.inbound = [(i, 0) for i in range(0, self.m)] + [(self.m - 1, j) for j in range(0, self.n)] \
-                         + [(i, self.n - 1) for i in range(self.m - 1, 0, -1)] + [(0, j) for j in range(self.n - 1, 0, -1)]
-        else:
-            self.boundary, self.inbound = self.detectBoundary()
         # get the pixels that appear twice on the boundary
         seen = set()
         double = set()
@@ -82,18 +64,13 @@ class Terrain:
         thisboundary = self.boundary
         for i in thisboundary:
             (double_add if i in seen else seen_add)(i)
-#            if i in seen:
-#                double_add(i)
-#            else:
-#                seen_add(i)
         self.duplicate = double
             
         # initialises other attributes
-#        self.diag = np.zeros((self.m - 1, self.n - 1), dtype=np.ndarray)
         self.diag = np.zeros((self.m - 1, self.n - 1), dtype=np.int8)
         self.neighbour = np.zeros((self.m, self.n), dtype=np.ndarray)
-        self.minz = np.min(self.dtm)
-        self.maxz = np.max(self.dtm)
+        self.below = self.minz - 2*abs(self.minz)
+        print('minz =', self.minz, 'maxz =', self.maxz)
 
     def getHeight(self, i, j):
         """
@@ -209,8 +186,7 @@ class Terrain:
             Returns True if the point is in the terrain.
 
         """
-#        return self.isInDomain(i, j) and self.pixelclass[i, j] > df.OUT
-        return self.isInDomain(i, j) and not (self.pixelclass[i, j] & CellType.NaN)
+        return self.isInDomain(i, j) and self.dtm[i, j] > self.nodata
 
     def isInSubPixel(self, i, j):
         """
@@ -232,8 +208,7 @@ class Terrain:
             Returns True if the point is in the terrain.
 
         """
-#        return self.isInSubPixelDomain(i, j) and self.pixelclass[int(i), int(j)] > df.OUT
-        return self.isInSubPixelDomain(i, j) and not (self.pixelclass[int(i), int(j)] & CellType.NaN)
+        return self.isInSubPixelDomain(i, j) and self.dtm[int(i), int(j)] > self.nodata
 
     def isInDomain(self, i, j):
         """
@@ -344,6 +319,8 @@ class Terrain:
             to it and the inner boundary where all pixels are inside but adjacent
             to the outside. The method should handle holes but this has not been
             done yet, which means that they are considered as low flat areas.
+            Internal holes (nodata regions not connected to the exterior) are
+            filled with zmin.
 
         Returns
         -------
@@ -353,54 +330,55 @@ class Terrain:
             list of pixels forming the inner boundary, all pixels are inside the terrain.
 
         """
-        # computation of the outer boundary
-        instart, jnstart = (0, 0)
-        while self.pixelclass[instart, jnstart] == CellType.INNaN:
-            self.pixelclass[instart, jnstart] = CellType.OUT
-            instart += 1
-            if instart == self.m:
-                instart = 0
-                jnstart += 1
-                if jnstart == self.n:
-                    instart = 0
-                    jnstart = 0
-                    break
+        # connectivity 4 matrix
+        conn4 = np.array([[0, 1, 0],
+                          [1, 1, 1],
+                          [0, 1, 0]], dtype=np.uint8)
+    
+        # Add a one-pixel -inf frame around the DEM.
+        zpad = np.pad(self.dtm, 1, constant_values=-np.inf)
+
+        # Detect holes
+        outmask = (zpad == -np.inf)
+        labels, _ = ndimage.label(outmask, structure=conn4)
+        outside_label = labels[0, 0]
+        outside = (labels == outside_label)
+        holes = outmask & ~outside
+
+        # Fill the holes
+        if np.any(holes):
+            zpad[holes] = self.minz
+            self.dtm[holes[1:-1, 1:-1]] = self.minz
+
         # instart,jnstart is the first pixel inside the terrain
+        for i in range(zpad.shape[0]):
+            cols = np.flatnonzero(np.isfinite(zpad[i]))
+            if cols.size:
+                instart = i
+                jnstart = cols[0]
+                break
+
+        # computation of the outer boundary
         istart = instart - 1
         jstart = jnstart # istart, jstart is on the outer boundary
         invldr = ((1, 0), (0, 1), (-1, 0), (0, -1))
-        ldr = df.ldr4
-        boundary = self.walkBoundary(istart, jstart, invldr)
+        boundary = self.walkBoundaryPad(zpad, istart, jstart, invldr)
         boundary.reverse()  # because we turn in the opposite direction around the global virtual pit
-
-        # fill all outer pixels
-        outstack = boundary[:]
-        while outstack:
-            (i, j) = outstack.pop()
-            if self.isInDomain(i, j) and self.pixelclass[i, j] == CellType.INNaN:
-                self.pixelclass[i, j] = CellType.OUT
-                pxlaround = [(i + di, j + dj) for (di, dj) in df.ldr4]
-                outstack.extend(pxlaround)
-        # all pixels in holes are considered inside
-        # to be modified to handle holes
-        thisarray = self.pixelclass
-        mask = (thisarray == CellType.INNaN)
-        thisarray[mask] = CellType.REGULAR
-#        for i in range(self.m):
-#            for j in range(self.n):
-#                if self.pixelclass[i, j] == CellType.INNaN:
-#                    self.pixelclass[i, j] = CellType.REGULAR
 
         # computation of the inner boundary
         # istart,jstart is the first pixel inside the terrain
         istart = instart
         jstart = jnstart
-        inbound = self.walkInbound(istart, jstart, ldr)
+        ldr = df.ldr4
+        inbound = self.walkInboundPad(zpad, istart, jstart, ldr)
         inbound.reverse()
 
+        # Convert padded coordinates back to original raster coordinates
+        boundary = [(i - 1, j - 1) for i, j in boundary]
+        inbound = [(i - 1, j - 1) for i, j in inbound]
         return boundary, inbound
 
-    def walkBoundary(self, istart, jstart, ldr):
+    def walkBoundaryPad(self, zpad, istart, jstart, ldr):
         """
         This method starts with a point located on the outer boundary and
         walks along the border until coming back to the first point.
@@ -432,7 +410,7 @@ class Terrain:
             pxlaround = [(i + di, j + dj) for (di, dj) in g]
             nexti = 4
             for ipxl, pxl in enumerate(pxlaround):
-                if not self.isInside(pxl[0], pxl[1]):
+                if not np.isfinite(zpad[pxl]):
                     nexti = ipxl
                     break
             if nexti == 4:
@@ -442,7 +420,7 @@ class Terrain:
             b = ((i, j) == (istart, jstart))
         return boundary
 
-    def walkInbound(self, istart, jstart, ldr):
+    def walkInboundPad(self, zpad, istart, jstart, ldr):
         """
         This method starts with a point located on the inner boundary and
         walks along the border until coming back to the first point.
@@ -471,11 +449,10 @@ class Terrain:
         while not b:
             inbound.append((i, j))
             pxlaround = [(i + di, j + dj) for (di, dj) in g]
-            #        print('pxl', i, j, self.pixelclass[i,j], 'neighb', pxlaround)
             nexti = 4
 #            for ipxl, pxl in enumerate(pxlaround[:-1]):
             for ipxl, pxl in enumerate(pxlaround):
-                if self.isInside(pxl[0], pxl[1]):
+                if np.isfinite(zpad[pxl]):
                     nexti = ipxl
                     break
             if nexti == 4:
@@ -557,7 +534,7 @@ class Terrain:
         """
         Define a diagonal in each cell that connects to the lowest point of the cell.
         This favours the computation of streams.
-
+        
         Returns
         -------
         None.
@@ -574,11 +551,11 @@ class Terrain:
         # diag = ones((m-1,n-1)) # nw-se orientation
         # diag = -1*ones((m-1,n-1)) # sw-ne orientation
         # orientation towards the lowest point
-        dtm = self.dtm
         
-        min1 = np.minimum(dtm[:-1, :-1], dtm[1:, 1:])
-        min2 = np.minimum(dtm[1:, :-1], dtm[:-1, 1:])
-        
+        z = self.dtm
+
+        min1 = np.minimum(z[:-1, :-1], z[1:, 1:])
+        min2 = np.minimum(z[1:, :-1], z[:-1, 1:])
         self.diag[:, :] = np.where(min1 < min2, 1, -1)
 
 #        for i in range(self.m - 1):
@@ -594,12 +571,16 @@ class Terrain:
         self.buildNeighbourArray()
 
     # raster triangulation with consideration of saddles and thalwegs
-    def saddleAndThalwegAwareDiagonalisation(self):
+    def saddleAndThalwegAwareDiagonalisation(self, pc):
         """
         Flip the diagonals towards the highest point of the cell. If saddles and
         thalwegs have been computed before (which should be the case), diagonals
         connecting to saddles and those run through by thalwegs are not flipped.
 
+        Parameter
+        ---------
+        pc : numpy array
+           an array that contains the cell type of each pixel         
         Returns
         -------
         None.
@@ -616,7 +597,6 @@ class Terrain:
 
         # set the diagonals around passes according to ridges and thalwegs
 
-        pc = self.pixelclass
         dtm = self.dtm
         
         # Top-left update block of 'diag' (shape: (m-1, n-1))
@@ -655,24 +635,6 @@ class Terrain:
         # Update only the cells we are allowed to modify
         block[process_mask] = -1
         block[process_mask & cmp] = 1
-
-        # # go through all diagonals
-        # for i in range(self.m - 1):
-        #     for j in range(self.n - 1):
-        #         # check if one point is a pass or two points are thalwegs or confluences
-        #         # in that case, we don't modify the diagonal
-        #         if pixelclass[i, j] == CellType.SADDLE or pixelclass[i, j + 1] == CellType.SADDLE or pixelclass[
-        #             i + 1, j] == CellType.SADDLE or pixelclass[i + 1, j + 1] == CellType.SADDLE:
-        #             continue
-        #         if (pixelclass[i, j] != CellType.REGULAR and pixelclass[i + 1, j + 1] != CellType.REGULAR) \
-        #                 or (pixelclass[i + 1, j] != CellType.REGULAR and pixelclass[i, j + 1] != CellType.REGULAR):
-        #             continue
-        #         max1 = max(dtm[i, j], dtm[i + 1, j + 1])
-        #         max2 = max(dtm[i + 1, j], dtm[i, j + 1])
-        #         if (max1 > max2):
-        #             self.diag[i, j] = 1
-        #         else:
-        #             self.diag[i, j] = -1
 
         # neighbour is a matrix where each cell contains the list of neighbours of a point
         self.buildNeighbourArray()
@@ -776,7 +738,7 @@ class Terrain:
                 #            if ((ik>=0) and (ik<self.m) and (jk>=0) and (jk<self.n)):
                 v[k] = self.dtm[ik, jk]
             else:
-                v[k] = self.nodata
+                v[k] = self.below
         return v
 
     # get neighbour points
@@ -808,7 +770,7 @@ class Terrain:
             if self.isInside(ik, jk):
                 v[k] = self.dtm[ik, jk]
             else:
-                v[k] = self.nodata
+                v[k] = self.below
         return v
 
     def checkSaddle(self, i, j, ldr):
@@ -914,129 +876,6 @@ class Terrain:
                 s = -1 * s
         return criticalline
 
-    # computation of saddles directly from the raster
-    def computeSaddles(self):
-        """
-        Detection of all saddles on the raster. Comparison is done on all eight neighbours.
-        The objective is to detect as many saddles as possible, they will be sorted after.
-        In the pixelclass, all saddles are marked TOBEPROCESSED for that.
-
-        Returns
-        -------
-        saddledict : dictionary
-            Contains all the saddles with their critical lines.
-        saddleidx : dictionary
-            Hash table storing saddle coordinates for indexing.
-
-        """
-        # matrix dimensions
-        A = self.dtm
-        pixelclass = self.pixelclass
-        m = self.m
-        n = self.n
-
-        # these are counters for counting saddle points
-        count_p = 0  # number of saddles (counting multiplicity)
-        count_n = 0  # number of saddles (without multiplicity)
-
-        saddledict = {}  # dictionary of saddles
-        saddleidx = {}  # dictionary indexing saddle coordinates
-
-        # 8 directions around a pixel, goes clockwise
-        ldr = ((-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1))
-        nv = len(ldr)
-
-        # here starts the computation of saddle points
-        # we go through each point and check its elevation against its neighbours
-        for i in range(m):
-            for j in range(n):
-                if not (pixelclass[i, j] & CellType.NaN):
-#                if pixelclass[i, j] > df.OUT:
-                    z = A[i, j]
-                    v = self.getAllNeighbourHeights(i, j)  # elevation of 8 neighbours
-                    signe = [0] * nv  # sign of elevation difference with centre
-                    Nc = 0
-
-                    # compute the points above and below
-                    for k in range(nv):
-                        dr = ldr[k]
-                        if (v[k] - z > 0):
-                            signe[k] = 1
-
-                        elif (v[k] - z < 0):
-                            signe[k] = -1
-
-                        else:
-                            # to be processed separately: flat areas?
-                            if (dr[0] > 0):  # di > 0
-                                signe[k] = 1
-                            elif (dr[0] < 0):
-                                signe[k] = -1
-                            elif (dr[1] > 0):
-                                signe[k] = 1
-                            else:
-                                signe[k] = -1
-                    # compute how many times we go above and below
-                    for k in range(nv):
-                        if (signe[k] != signe[k - 1]):
-                            Nc += 1
-
-                    if Nc >= 4:  # classified as a saddle
-                        dz = df.gradLength(z, v, ldr)
-                        # compute the points above and below
-                        indx = list(range(nv))
-                        # if two consecutive neighbours have the same sign, we keep the one with the steepest slope
-                        k = nv - 1
-                        while k >= 0:
-                            if (signe[k] == signe[k - 1]):
-                                tmp = signe[k] * (dz[k] - dz[k - 1])
-                                if tmp == 0:
-                                    # we fix the sign according to the lexicographical order
-                                    ik = indx[k]
-                                    ik1 = indx[k - 1]
-                                    drk = ldr[ik]
-                                    drk1 = ldr[ik1]
-                                    tmp = -signe[k] * df.lexicoSign(drk1[0] - drk[0], drk1[1] - drk[1])
-                                if (tmp > 0):
-                                    del signe[k - 1]
-                                    del dz[k - 1]
-                                    del indx[k - 1]
-                                elif (tmp < 0):
-                                    del signe[k]
-                                    del dz[k]
-                                    del indx[k]
-                                if k == len(signe):
-                                    k -= 1
-                            else:
-                                k -= 1
-                        criticalline = [[(i, j), (i + di, j + dj), 0, 0] for (di, dj) in [ldr[k] for k in indx]]
-                        k = 0
-                        for l in criticalline:
-                            l[3] = v[indx[k]]
-                            k += 1
-                        firstline = criticalline[0]
-                        if firstline[3] > z:  # first line is a ridge
-                            s = 1
-                        elif firstline[3] < z:
-                            s = -1
-                        else:
-                            s = df.lexicoSign(firstline[1][0] - firstline[0][0], firstline[1][1] - firstline[0][1])
-                        for l in criticalline:
-                            l[2] = s
-                            s = -1 * s
-                        saddledict[count_n] = {
-                            'ij': (i, j),
-                            'z': A[i, j],
-                            'criticalline': criticalline,
-                            'line': [],
-                            'type': CellType.SADDLE
-                        }
-                        pixelclass[i, j] = CellType.TOBEPROCESSED
-                        saddleidx[i, j] = count_n
-                        count_n += 1
-                        count_p += (Nc / 2 - 1)
-        return saddledict, saddleidx    # computation of saddles directly from the raster
-        
     def pixelCulverts(self, linelist, length = 5):
         """
         Pixelates a list of lines

@@ -9,7 +9,7 @@ Created on Thu Jan 29 22:19:06 2026
 from enum import IntFlag
     
 class CellType(IntFlag):
-    # flag during process (be careful in binary test)
+    # flag during process
     TOBEPROCESSED = 1
     
     nanshift = 2

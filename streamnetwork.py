@@ -354,6 +354,11 @@ class StreamNetwork(SurfaceNetwork):
         for inode in springlist:
             self.computeStrahlerOrderDownstream(inode, accumulation)
 
+        # remove order and spring node
+        for inode, node in self.nodedict.items():
+            del node['order']
+            del node['source']
+
     def assignHortonOrder(self):
         """
         Computation of the Horton order for each thalweg. The Strahler order

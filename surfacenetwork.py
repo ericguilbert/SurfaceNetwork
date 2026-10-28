@@ -202,8 +202,7 @@ class SurfaceNetwork(ThalwegNetwork):
         validridge = True
         
         checkcovers = False
-        if self.isDownslopeLine(self.terrain.pixelclass[i,j]) or CellType.isTJunction(self.terrain.pixelclass[i,j]):
-#        if CellType.isThalweg(self.terrain.pixelclass[i,j]) or CellType.isTJunction(self.terrain.pixelclass[i,j]):
+        if self.isDownslopeLine(self.pixelclass[i,j]) or CellType.isTJunction(self.pixelclass[i,j]):
             checkcovers = True
         for kk,value in enumerate(dz):
             ij = (i+ldr[kk][0], j+ldr[kk][1])
@@ -563,14 +562,11 @@ class SurfaceNetwork(ThalwegNetwork):
         """
 
         terrain = self.terrain
-#        # key for new ridges        
-#        nextridge = max(self.linedict) + 1
         # hill polygons and map of dangling thalwegs
         hillpolygon, danglingmap = self.createHillPolygons()
         
-        pixelclass = self.terrain.pixelclass
+        pixelclass = self.pixelclass
 
-#        testir = [10363]
         for ihill in self.hilldict:
             floorkey={} # coordinate index recording ridge id
             junctionidx = {} # coordinate index to junctions
@@ -705,11 +701,6 @@ class SurfaceNetwork(ThalwegNetwork):
                             p1 = self.linedict[dtoverlap]['polyline'][it1]
                             # if we don't know on which side to stay
                             if thalwegside == 0:
-### On veut prendre le talweg précédent et le suivant -> sauter les crêtes
-#                                jthalweg = ithalweg - 1
-#                                kthalweg = ithalweg + 1
-#                                if kthalweg == len(lthalweg):
-#                                    kthalweg = 0
                                 jthalweg = self.previousThalwegIndexAtNode(iconf, ithalweg)
                                 kthalweg = self.nextThalwegIndexAtNode(iconf, ithalweg)
                                 it2 = df.getSecondPointPosition(lthalweg[jthalweg])
@@ -738,9 +729,6 @@ class SurfaceNetwork(ThalwegNetwork):
                                 elif side2 > 0:
                                     confluencewedge = wedge3
                                     thalwegside = side34
-                                # remplace
-                                #thalwegside = df.sideOfWedge(confluencewedge, p1)
-                                # fin ajout 7/9/22
                             # if we know on which side to stay
                             else:
                                 jthalweg = kthalweg = self.nextThalwegIndexAtNode(iconf, ithalweg)
@@ -803,7 +791,6 @@ class SurfaceNetwork(ThalwegNetwork):
                     # as end points since ridges only start from saddles
                     # if divide is true, ridges can start and end at confluences
                     elif self.isDownslopeLine(pixelclass[i,j]) or (CellType.isTJunction(pixelclass[i,j]) and not divide):
-#                    elif CellType.isThalweg(pixelclass[i,j]) or (CellType.isTJunction(pixelclass[i,j]) and not divide):
                         if (i,j) in floorkey: # we reach a ridge
                             if not okjoin:
                                 junction = False
@@ -901,8 +888,6 @@ class SurfaceNetwork(ThalwegNetwork):
                                 ridgeindangling[k].append((self.linekey, tmp))
                         self.linekey += 1
                     else:
-#                        if self.isDownslopeLine(pixelclass[i,j]):
-#                            print(i,j, ir, danglingmap[i,j], pixelclass[i,j])
                         endindex = self.nodeidx[(i,j)]
 
                     # the last point is a critical point
