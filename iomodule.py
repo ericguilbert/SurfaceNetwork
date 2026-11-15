@@ -46,9 +46,6 @@ def readRasterDTM(filename, terrain):
     if not nodata or nodata > minvalue:
         nodata = minvalue
         
-    print(terrain.m, 'rows', terrain.n, 'columns')
-    print("minvalue =", minvalue, 'nodata =', nodata)
-
     dtm = raster.ReadAsArray()
     if not numpy.isnan(nodata):
         dtm[dtm==nodata] = -numpy.inf
