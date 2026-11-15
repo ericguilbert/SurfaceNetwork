@@ -84,32 +84,32 @@ class ThalwegNetwork:
         #print('Removing conflicting saddles')
         self.mergeSaddles(saddledict, saddleidx)
         end = perf_counter_ns()
-        print("Saddle computation time:", end - start)
+        print("Saddle computation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         terrain.saddleAndFlowAwareDiagonalisation(self.nodedict)
         end = perf_counter_ns()
-        print("Diagonalisation time:", end - start)
+        print("Diagonalisation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         self.computePits()
         end = perf_counter_ns()
-        print("Pit computation time:", end - start)
+        print("Pit computation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         self.createThalwegs(correction)
         self.orderThalwegsAroundNodes()
         end = perf_counter_ns()
-        print("Thalweg computation time (including ordering):", end - start)
+        print("Thalweg computation time (including ordering):", (end - start)*10**-9)
         start = perf_counter_ns()
         self.computeHills()
         end = perf_counter_ns()
-        print("Hill computation time:", end - start)
+        print("Hill computation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         terrain.saddleAndThalwegAwareDiagonalisation(self.pixelclass)
         end = perf_counter_ns()
-        print("Diagonalisation time:", end - start)
+        print("Diagonalisation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         self.computePeaks()
         end = perf_counter_ns()
-        print("Peak computation time:", end - start)
+        print("Peak computation time:", (end - start)*10**-9)
         
     def buildFlowThalwegsFromTerrain(self, terrain, correction = False):
         """
@@ -144,27 +144,28 @@ class ThalwegNetwork:
         self.computeSaddles()
         self.computePits()
         end = perf_counter_ns()
-        print("Saddle and pit computation time:", end - start)
+        print("Saddle and pit computation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         self.createThalwegs(correction)
         self.orderThalwegsAroundNodes()
         end = perf_counter_ns()
-        print("Thalweg computation time (including ordering):", end - start)
+        print("Thalweg computation time (including ordering):", (end - start)*10**-9)
         start = perf_counter_ns()
         self.computeHills()
         end = perf_counter_ns()
-        print("Hill computation time:", end - start)
+        print("Hill computation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         terrain.saddleAndThalwegAwareDiagonalisation(self.pixelclass)
         end = perf_counter_ns()
-        print("Diagonalisation time:", end - start)
+        print("Diagonalisation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         self.computePeaks()
         end = perf_counter_ns()
-        print("Peak computation time:", end - start)
+        print("Peak computation time:", (end - start)*10**-9)
         
     def saveNetwork(self, directory, name):
         tmp = self.terrain
+        self.pixel = None
         self.terrain = None # we don't save the terrain, that's too big
         with open( directory + name + '.snw', 'wb') as f:
             pickle.dump(self, f, pickle.HIGHEST_PROTOCOL)
@@ -1244,6 +1245,93 @@ class ThalwegNetwork:
         while [] in thalwegring:
             thalwegring.remove([])
         return thalwegring, innerline
+
+    def getHillWedges(self, ihill):
+        """
+        Returns a list of list of points representing the boundary. Each list
+        of points is a ring. The first ring is the outer boundary of the hill
+        and is directed in clockwise order. The other rings, if any, are the
+        holes and are directed in counterclockwise order.
+
+        Parameters
+        ----------
+        ihill : integer
+            the index of the hill in the hill dictionary.
+
+        Returns
+        -------
+        ringlist : list of list of pairs of integers
+            Pairs of integers are pixel coordinates. Lists of pixels are rings.
+            Each ring is a boundary. The first one is the outer boundary.
+
+        """
+        hill = self.hilldict[ihill]
+        thalwegring = [hill['boundary']] + hill['hole']
+        linedict = self.linedict
+        
+        wedge = dict()
+        lastpoint = 0
+
+        for tring in thalwegring:
+            if not tring:
+                continue
+            lastthalweg = tring[-1]
+            if lastthalweg > 0:
+                lastpoint = linedict[lastthalweg]['polyline'][-2]
+            else:
+                lastpoint = linedict[-lastthalweg]['polyline'][1]
+            # get the list of points forming the ring
+            for it in tring:
+                if it > 0:
+                    t = linedict[it]
+                    poly = t['polyline']
+                    wedge[poly[0]] = [lastpoint, poly[0], poly[1]]
+                    for i in range(1,len(poly)-1):
+                        wedge[poly[i]] = poly[i-1:i+2]
+                    lastpoint = poly[-2]
+                else:
+                    t = linedict[-it]
+                    poly = t['polyline']
+                    wedge[poly[-1]] = [lastpoint, poly[-1], poly[-2]]
+                    for i in range(2,len(poly)-1):
+                        wedge[poly[i]] = poly[i+1:i-2:-1]
+                    if len(poly) > 2:
+                        wedge[poly[1]] = poly[2::-1]
+                    lastpoint = poly[1]
+        return wedge
+
+    def getDanglingMap(self):
+        """
+        Creates a shapely polygon from a set of thalwegs forming a hill. The 
+        method is used to maintain a ridge within a hill.
+
+        Parameters
+        ----------
+        thalwegring : list of integers
+            List of thalwegs indexes delineating a hill.
+        thalwegline : list of integers
+            List of thalwegs forming dangling lines inside the hill.
+
+        Returns
+        -------
+        hillpolygon : list of polygons
+            Polygons of hills defined as a shapely geometry
+        danglingmap : np.array
+            map where each pixel has the id of the dangling thalweg passing there
+
+        """
+        danglingmap = np.zeros((self.terrain.m, self.terrain.n))
+        for ihill in self.hilldict:
+            hill = self.hilldict[ihill]
+            
+            danglingthalweg = hill['dangling']
+            for it in danglingthalweg:
+                t = self.linedict[it]
+                polyline = t['polyline'][:-1]
+                for p in polyline:
+                    danglingmap[p] = it
+        return danglingmap
+
 
     def createHillPolygons(self):
         """
