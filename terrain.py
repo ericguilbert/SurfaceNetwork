@@ -558,15 +558,6 @@ class Terrain:
         min2 = np.minimum(z[1:, :-1], z[:-1, 1:])
         self.diag[:, :] = np.where(min1 < min2, 1, -1)
 
-#        for i in range(self.m - 1):
-#            for j in range(self.n - 1):
-#                min1 = min(dtm[i, j], dtm[i + 1, j + 1])
-#                min2 = min(dtm[i + 1, j], dtm[i, j + 1])
-#                if (min1 < min2):
-#                    self.diag[i, j] = 1
-#                else:
-#                    self.diag[i, j] = -1
-
         # neighbour is a matrix where each cell contains the list of neighbours of a point
         self.buildNeighbourArray()
 
