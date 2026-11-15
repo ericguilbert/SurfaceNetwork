@@ -70,11 +70,11 @@ class ExtendedSurfaceNetwork(StreamNetwork):
         self.correctDivideToRidge()
         self.orderRidgesAroundNodes()
         end = perf_counter_ns()
-        print("Ridge computation time:", end - start)
+        print("Ridge computation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         self.computeThalwegDales()
         end = perf_counter_ns()
-        print("Dale computation time:", end - start)
+        print("Dale computation time:", (end - start)*10**-9)
         
     def getSurfaceWatercoursesAtNode(self, ipt):
         pt = self.nodedict[ipt]
