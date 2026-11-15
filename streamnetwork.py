@@ -6,6 +6,7 @@ Created on Tue Feb  4 15:19:05 2020
 """
 from collections import deque
 import array
+import numpy as np
 import deffunction as df
 from celltype import CellType
 from surfacenetwork import SurfaceNetwork
@@ -168,7 +169,7 @@ class StreamNetwork(SurfaceNetwork):
         """
         iend = self.toNode(it)
         if iend == -1:
-            return CellType.INNaN
+            return -np.inf
         length = df.length(self.linedict[it]['polyline'])
         ptend = self.nodedict[iend]
         ptstart = self.nodedict[self.fromNode(it)]
@@ -335,7 +336,7 @@ class StreamNetwork(SurfaceNetwork):
 
         """
         # convert square units in pixels
-        accumulation = threshold/(self.terrain.x_size*self.terrain.x_size)
+        accumulation = threshold/abs(self.terrain.x_size*self.terrain.y_size)
         # initialise all nodes with an order 0 and no spring
         for inode, node in self.nodedict.items():
             node['order'] = 0
@@ -359,6 +360,88 @@ class StreamNetwork(SurfaceNetwork):
             del node['order']
             del node['source']
 
+    def assignStrahlerOrderSFD(self, threshold=0):
+        """
+        Compute Strahler order for a single-flow-direction network.
+    
+        Streams with accumulation below threshold receive order 0.
+    
+        After execution:
+            node['order']
+            thalweg['order']
+        are defined.
+        """
+    
+        accumulation_threshold = (threshold / abs(self.terrain.x_size * self.terrain.y_size))
+
+        # initialise node variables
+        # list of downstream watercourses
+        downstream = [self.downstreamThalwegs(inode) for inode in range(self.nodekey)]
+        # number of remaining upstream watercourses that have not been visited
+        remaining = [0] * self.nodekey
+        # maximum order of the upper streams
+        maxorder = [0] * self.nodekey
+        # number of times this maxorder was found
+        countmax = [0] * self.nodekey
+
+        # initialise thalwegs
+        for it, t in self.linedict.items():
+            if not (t['type'] & CellType.WATERCOURSE_FLAG):
+                continue
+            # accumulation below threshold: no water and order = 0
+            if t['accumulation'] < accumulation_threshold:
+                t['order'] = 0
+            else:
+                # count as an upper stream to be visited
+                tonode = self.toNode(it)
+                remaining[tonode] += 1
+    
+        # queue nodes whose active upstream count is zero
+        queue = deque()
+        for inode in range(self.nodekey):
+            if remaining[inode] != 0:
+                continue
+            nextstream = [it for it in downstream[inode] if (
+                    self.linedict[it]['type'] & CellType.WATERCOURSE_FLAG and
+                    self.linedict[it]['accumulation'] >= accumulation_threshold)]
+            if nextstream:
+                maxorder[inode] = 1
+                countmax[inode] = 1
+                queue.append(inode)
+
+        # topological traversal
+        while queue:
+            inode = queue.popleft()
+            node_order = maxorder[inode]
+            nextstream = downstream[inode]
+            for it in nextstream:
+                t = self.linedict[it]
+#                if not (t['type'] & CellType.WATERCOURSE_FLAG):
+#                    continue
+                if t['accumulation'] < accumulation_threshold:
+                    continue
+    
+                # thalweg has same order as source node
+                t['order'] = node_order
+                tonode = self.toNode(it)
+                dnode = self.nodedict[tonode]
+    
+                # update statistics on the downstream node
+                if node_order > maxorder[tonode]:
+                    maxorder[tonode] = node_order
+                    countmax[tonode] = 1
+                elif node_order == maxorder[tonode]:
+                    countmax[tonode] += 1
+                remaining[tonode] -= 1
+    
+                # all upstream streams processed
+                if remaining[tonode] == 0:
+                    if maxorder[tonode] == 0:
+                        maxorder[tonode] = 0
+                    elif countmax[tonode] >= 2:
+                        maxorder[tonode] += 1
+                    queue.append(tonode)
+    
     def assignHortonOrder(self):
         """
         Computation of the Horton order for each thalweg. The Strahler order
@@ -520,9 +603,9 @@ class StreamNetwork(SurfaceNetwork):
                 if downstream:
                     n = len(downstream)
                     slopelist = [min(0, self.computeStreamSlope(idt)) for idt in downstream]
-                    if CellType.INNaN in slopelist:
+                    if -np.inf in slopelist:
                         for i in range(n):
-                            if slopelist[i] != CellType.INNaN:
+                            if slopelist[i] != -np.inf:
                                 slopelist[i] = 0
                     accu = [0]*n
                     accutot = self.linedict[it]['accumulation']
