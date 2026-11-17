@@ -165,8 +165,7 @@ class ThalwegNetwork:
         
     def saveNetwork(self, directory, name):
         tmp = self.terrain
-        self.pixel = None
-        self.terrain = None # we don't save the terrain, that's too big
+        self.terrain = None # we don't save the terrain
         with open( directory + name + '.snw', 'wb') as f:
             pickle.dump(self, f, pickle.HIGHEST_PROTOCOL)
         self.terrain = tmp
