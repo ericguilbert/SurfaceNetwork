@@ -24,9 +24,9 @@ class ThalwegNetwork:
     # linedict: a dictionary of lines connecting at critical points
     # hilldict: a dictionary of hills (descending cells)
     
-    # saddles are detected first
-    # terrain triangulation is computed
-    # thalwegs are computed and hills are defined from thalwegs
+    # the algorithm detects saddles and pits first
+    # thalwegs are then detected
+    # hills are built from thalwegs
 
     # constructor building an empty network
     def __init__(self):
@@ -71,6 +71,8 @@ class ThalwegNetwork:
         self.nodeidx = {}
         self.linedict = {}
         self.terrain = terrain
+        outmask = (terrain.dtm == terrain.nodata)
+        self.pixelclass = np.where(outmask, CellType.NaN, CellType.REGULAR)
         
         if correction:
             df.distancefactor = 2/3
@@ -78,36 +80,36 @@ class ThalwegNetwork:
             df.distancefactor = sqrt(2)/2
         #print('Computing all potential saddles')
         start = perf_counter_ns()
-        saddledict, saddleidx = self.terrain.computeSaddles()
+        saddledict, saddleidx = self.computeRawSaddles()
         #print('Removing conflicting saddles')
         self.mergeSaddles(saddledict, saddleidx)
         end = perf_counter_ns()
-        print("Saddle computation time:", end - start)
+        print("Saddle computation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         terrain.saddleAndFlowAwareDiagonalisation(self.nodedict)
         end = perf_counter_ns()
-        print("Diagonalisation time:", end - start)
+        print("Diagonalisation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         self.computePits()
         end = perf_counter_ns()
-        print("Pit computation time:", end - start)
+        print("Pit computation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         self.createThalwegs(correction)
         self.orderThalwegsAroundNodes()
         end = perf_counter_ns()
-        print("Thalweg computation time (including ordering):", end - start)
+        print("Thalweg computation time (including ordering):", (end - start)*10**-9)
         start = perf_counter_ns()
         self.computeHills()
         end = perf_counter_ns()
-        print("Hill computation time:", end - start)
+        print("Hill computation time:", (end - start)*10**-9)
         start = perf_counter_ns()
-        terrain.saddleAndThalwegAwareDiagonalisation()
+        terrain.saddleAndThalwegAwareDiagonalisation(self.pixelclass)
         end = perf_counter_ns()
-        print("Diagonalisation time:", end - start)
+        print("Diagonalisation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         self.computePeaks()
         end = perf_counter_ns()
-        print("Peak computation time:", end - start)
+        print("Peak computation time:", (end - start)*10**-9)
         
     def buildFlowThalwegsFromTerrain(self, terrain, correction = False):
         """
@@ -132,6 +134,8 @@ class ThalwegNetwork:
         self.nodeidx = {}
         self.linedict = {}
         self.terrain = terrain
+        outmask = (terrain.dtm == terrain.nodata)
+        self.pixelclass = np.where(outmask, CellType.NaN, CellType.REGULAR)
         
         print("Diagonalising the raster")
         terrain.flowDiagonalisation()
@@ -140,28 +144,28 @@ class ThalwegNetwork:
         self.computeSaddles()
         self.computePits()
         end = perf_counter_ns()
-        print("Saddle and pit computation time:", end - start)
+        print("Saddle and pit computation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         self.createThalwegs(correction)
         self.orderThalwegsAroundNodes()
         end = perf_counter_ns()
-        print("Thalweg computation time (including ordering):", end - start)
+        print("Thalweg computation time (including ordering):", (end - start)*10**-9)
         start = perf_counter_ns()
         self.computeHills()
         end = perf_counter_ns()
-        print("Hill computation time:", end - start)
+        print("Hill computation time:", (end - start)*10**-9)
         start = perf_counter_ns()
-        terrain.saddleAndThalwegAwareDiagonalisation()
+        terrain.saddleAndThalwegAwareDiagonalisation(self.pixelclass)
         end = perf_counter_ns()
-        print("Diagonalisation time:", end - start)
+        print("Diagonalisation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         self.computePeaks()
         end = perf_counter_ns()
-        print("Peak computation time:", end - start)
+        print("Peak computation time:", (end - start)*10**-9)
         
     def saveNetwork(self, directory, name):
         tmp = self.terrain
-        self.terrain = None # we don't save the terrain, that's too big
+        self.terrain = None # we don't save the terrain
         with open( directory + name + '.snw', 'wb') as f:
             pickle.dump(self, f, pickle.HIGHEST_PROTOCOL)
         self.terrain = tmp
@@ -354,6 +358,129 @@ class ThalwegNetwork:
         
         return dz / distance
         
+    # computation of saddles directly from the raster
+    def computeRawSaddles(self):
+        """
+        Detection of all saddles on the raster. Comparison is done on all eight neighbours.
+        The objective is to detect as many saddles as possible, they will be sorted after.
+        In the pixelclass, all saddles are marked TOBEPROCESSED for that.
+
+        Returns
+        -------
+        saddledict : dictionary
+            Contains all the saddles with their critical lines.
+        saddleidx : dictionary
+            Hash table storing saddle coordinates for indexing.
+
+        """
+        # matrix dimensions
+        terrain = self.terrain
+        A = terrain.dtm
+        pixelclass = self.pixelclass
+        m = terrain.m
+        n = terrain.n
+
+        # these are counters for counting saddle points
+        count_p = 0  # number of saddles (counting multiplicity)
+        count_n = 0  # number of saddles (without multiplicity)
+
+        saddledict = {}  # dictionary of saddles
+        saddleidx = {}  # dictionary indexing saddle coordinates
+
+        # 8 directions around a pixel, goes clockwise
+        ldr = ((-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1))
+        nv = len(ldr)
+
+        # here starts the computation of saddle points
+        # we go through each point and check its elevation against its neighbours
+        for i in range(m):
+            for j in range(n):
+                if not (pixelclass[i, j] & CellType.NaN):
+                    z = A[i, j]
+                    v = terrain.getAllNeighbourHeights(i, j)  # elevation of 8 neighbours
+                    signe = [0] * nv  # sign of elevation difference with centre
+                    Nc = 0
+
+                    # compute the points above and below
+                    for k in range(nv):
+                        dr = ldr[k]
+                        if (v[k] - z > 0):
+                            signe[k] = 1
+
+                        elif (v[k] - z < 0):
+                            signe[k] = -1
+
+                        else:
+                            # to be processed separately: flat areas?
+                            if (dr[0] > 0):  # di > 0
+                                signe[k] = 1
+                            elif (dr[0] < 0):
+                                signe[k] = -1
+                            elif (dr[1] > 0):
+                                signe[k] = 1
+                            else:
+                                signe[k] = -1
+                    # compute how many times we go above and below
+                    for k in range(nv):
+                        if (signe[k] != signe[k - 1]):
+                            Nc += 1
+
+                    if Nc >= 4:  # classified as a saddle
+                        dz = df.gradLength(z, v, ldr)
+                        # compute the points above and below
+                        indx = list(range(nv))
+                        # if two consecutive neighbours have the same sign, we keep the one with the steepest slope
+                        k = nv - 1
+                        while k >= 0:
+                            if (signe[k] == signe[k - 1]):
+                                tmp = signe[k] * (dz[k] - dz[k - 1])
+                                if tmp == 0:
+                                    # we fix the sign according to the lexicographical order
+                                    ik = indx[k]
+                                    ik1 = indx[k - 1]
+                                    drk = ldr[ik]
+                                    drk1 = ldr[ik1]
+                                    tmp = -signe[k] * df.lexicoSign(drk1[0] - drk[0], drk1[1] - drk[1])
+                                if (tmp > 0):
+                                    del signe[k - 1]
+                                    del dz[k - 1]
+                                    del indx[k - 1]
+                                elif (tmp < 0):
+                                    del signe[k]
+                                    del dz[k]
+                                    del indx[k]
+                                if k == len(signe):
+                                    k -= 1
+                            else:
+                                k -= 1
+                        criticalline = [[(i, j), (i + di, j + dj), 0, 0] for (di, dj) in [ldr[k] for k in indx]]
+                        k = 0
+                        for l in criticalline:
+                            l[3] = v[indx[k]]
+                            k += 1
+                        firstline = criticalline[0]
+                        if firstline[3] > z:  # first line is a ridge
+                            s = 1
+                        elif firstline[3] < z:
+                            s = -1
+                        else:
+                            s = df.lexicoSign(firstline[1][0] - firstline[0][0], firstline[1][1] - firstline[0][1])
+                        for l in criticalline:
+                            l[2] = s
+                            s = -1 * s
+                        saddledict[count_n] = {
+                            'ij': (i, j),
+                            'z': A[i, j],
+                            'criticalline': criticalline,
+                            'line': [],
+                            'type': CellType.SADDLE
+                        }
+                        pixelclass[i, j] = CellType.TOBEPROCESSED
+                        saddleidx[i, j] = count_n
+                        count_n += 1
+                        count_p += (Nc / 2 - 1)
+        return saddledict, saddleidx    # computation of saddles directly from the raster
+        
     def mergeSaddles(self, saddledict, saddleidx):
         """
         Eliminates saddles in conflict with other saddles. The method proceeds
@@ -372,7 +499,7 @@ class ThalwegNetwork:
 
         """
         m,n = self.terrain.m, self.terrain.n
-        pixelclass = self.terrain.pixelclass
+        pixelclass = self.pixelclass
         passdict = {}
         passid = 0
         
@@ -476,7 +603,7 @@ class ThalwegNetwork:
                     else:
                         saddlelist.remove(si)
                         del saddledict[si]
-                        self.terrain.pixelclass[i,j] = CellType.REGULAR
+                        pixelclass[i,j] = CellType.REGULAR
                 saddlelist.remove(iminsaddle)
 #                break
         
@@ -503,7 +630,7 @@ class ThalwegNetwork:
         """
         # matrix dimensions
         A = self.terrain.dtm
-        pixelclass = self.terrain.pixelclass
+        pixelclass = self.pixelclass
         m = self.terrain.m
         n = self.terrain.n
 
@@ -629,7 +756,7 @@ class ThalwegNetwork:
         # matrix dimensions
         m = self.terrain.m
         n = self.terrain.n
-        pixelclass = self.terrain.pixelclass
+        pixelclass = self.pixelclass
 
         # here starts the computation of pit points
         # we go through each point and check its elevation against its neighbours
@@ -677,7 +804,7 @@ class ThalwegNetwork:
             'ij' : [],
             'line' : [],
             'type' : CellType.PIT,
-            'z' : self.terrain.nodata
+            'z' : self.terrain.below
         }
 
     # computation of peaks considering saddles and thalwegs
@@ -697,7 +824,7 @@ class ThalwegNetwork:
         # matrix dimensions
         m = self.terrain.m
         n = self.terrain.n
-        pixelclass = self.terrain.pixelclass
+        pixelclass = self.pixelclass
 
         # here starts the computation of peak points
         # we go through each point and check its elevation against its neighbours
@@ -779,9 +906,9 @@ class ThalwegNetwork:
         nextthalweg = self.linekey + 1
         # check if we are out of the domain or on a node
         if self.terrain.isInside(i,j):
-            if self.terrain.pixelclass[i,j] == CellType.REGULAR:
+            if self.pixelclass[i,j] == CellType.REGULAR:
                 keepgoing = True
-                self.terrain.pixelclass[i,j] = celltype
+                self.pixelclass[i,j] = celltype
                 self.floorkey[i,j] = self.linekey
             elif len(polylist) > 1:
                 keepgoing = False
@@ -891,9 +1018,9 @@ class ThalwegNetwork:
        
             # check again if the point is a node or out
             if self.terrain.isInside(i,j):
-                if self.terrain.pixelclass[i,j] == CellType.REGULAR:
+                if self.pixelclass[i,j] == CellType.REGULAR:
                     keepgoing = True
-                    self.terrain.pixelclass[i,j] = celltype
+                    self.pixelclass[i,j] = celltype
                     self.floorkey[i,j] = self.linekey
                 else:
                     keepgoing = False
@@ -913,9 +1040,7 @@ class ThalwegNetwork:
             self.nodedict[-1]['ij'].append((i,j))
             endindex = -1
         else:
-#            if CellType.isSurfaceWatercourse(self.terrain.pixelclass[i,j]):
-#            if CellType.isThalweg(self.terrain.pixelclass[i,j]):
-            if self.isDownslopeLine(self.terrain.pixelclass[i,j]):
+            if self.isDownslopeLine(self.pixelclass[i,j]):
                 # if we reach an existing thalweg, we have to create a confluence
                 idthalweg = self.floorkey[i,j]
                 # we create the new node
@@ -927,7 +1052,7 @@ class ThalwegNetwork:
                     'line' : [-idthalweg, nextthalweg],
                     'type' : CellType.TJUNCTION
                 }
-                self.terrain.pixelclass[i,j] = CellType.TJUNCTION
+                self.pixelclass[i,j] = CellType.TJUNCTION
                 self.nodekey += 1
                 # split the existing thalweg in two
                 t = self.linedict[idthalweg]
@@ -954,13 +1079,9 @@ class ThalwegNetwork:
                 for k in ptlist2[1:-1]:
                     self.floorkey[k] = nextthalweg
                 nextthalweg += 1
-            elif CellType.isCourseNode(self.terrain.pixelclass[i,j]):
+            elif CellType.isCourseNode(self.pixelclass[i,j]):
                 # reach a confluence: add the thalweg to the confluence
                 endindex = self.nodeidx[(i,j)]
-#                    elif self.terrain.pixelclass[i,j] == CellType.SADDLE:
-#                        endindex = self.nodeidx[(i,j)]
-#                    elif self.terrain.pixelclass[i,j] == CellType.PIT:
-#                        endindex = self.nodeidx[(i,j)]
 
         # the last point is a critical point
         # we add its index to the thalweglist
@@ -1123,6 +1244,93 @@ class ThalwegNetwork:
         while [] in thalwegring:
             thalwegring.remove([])
         return thalwegring, innerline
+
+    def getHillWedges(self, ihill):
+        """
+        Returns a list of list of points representing the boundary. Each list
+        of points is a ring. The first ring is the outer boundary of the hill
+        and is directed in clockwise order. The other rings, if any, are the
+        holes and are directed in counterclockwise order.
+
+        Parameters
+        ----------
+        ihill : integer
+            the index of the hill in the hill dictionary.
+
+        Returns
+        -------
+        ringlist : list of list of pairs of integers
+            Pairs of integers are pixel coordinates. Lists of pixels are rings.
+            Each ring is a boundary. The first one is the outer boundary.
+
+        """
+        hill = self.hilldict[ihill]
+        thalwegring = [hill['boundary']] + hill['hole']
+        linedict = self.linedict
+        
+        wedge = dict()
+        lastpoint = 0
+
+        for tring in thalwegring:
+            if not tring:
+                continue
+            lastthalweg = tring[-1]
+            if lastthalweg > 0:
+                lastpoint = linedict[lastthalweg]['polyline'][-2]
+            else:
+                lastpoint = linedict[-lastthalweg]['polyline'][1]
+            # get the list of points forming the ring
+            for it in tring:
+                if it > 0:
+                    t = linedict[it]
+                    poly = t['polyline']
+                    wedge[poly[0]] = [lastpoint, poly[0], poly[1]]
+                    for i in range(1,len(poly)-1):
+                        wedge[poly[i]] = poly[i-1:i+2]
+                    lastpoint = poly[-2]
+                else:
+                    t = linedict[-it]
+                    poly = t['polyline']
+                    wedge[poly[-1]] = [lastpoint, poly[-1], poly[-2]]
+                    for i in range(2,len(poly)-1):
+                        wedge[poly[i]] = poly[i+1:i-2:-1]
+                    if len(poly) > 2:
+                        wedge[poly[1]] = poly[2::-1]
+                    lastpoint = poly[1]
+        return wedge
+
+    def getDanglingMap(self):
+        """
+        Creates a shapely polygon from a set of thalwegs forming a hill. The 
+        method is used to maintain a ridge within a hill.
+
+        Parameters
+        ----------
+        thalwegring : list of integers
+            List of thalwegs indexes delineating a hill.
+        thalwegline : list of integers
+            List of thalwegs forming dangling lines inside the hill.
+
+        Returns
+        -------
+        hillpolygon : list of polygons
+            Polygons of hills defined as a shapely geometry
+        danglingmap : np.array
+            map where each pixel has the id of the dangling thalweg passing there
+
+        """
+        danglingmap = np.zeros((self.terrain.m, self.terrain.n))
+        for ihill in self.hilldict:
+            hill = self.hilldict[ihill]
+            
+            danglingthalweg = hill['dangling']
+            for it in danglingthalweg:
+                t = self.linedict[it]
+                polyline = t['polyline'][:-1]
+                for p in polyline:
+                    danglingmap[p] = it
+        return danglingmap
+
 
     def createHillPolygons(self):
         """

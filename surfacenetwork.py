@@ -61,14 +61,14 @@ class SurfaceNetwork(ThalwegNetwork):
         self.traceRidges(divide, correction)
         self.orderRidgesAroundNodes()
         end = perf_counter_ns()
-        print("Ridge computation time:", end - start)
+        print("Ridge computation time:", (end - start)*10**-9)
         start = perf_counter_ns()
         if divide:
             print("Depressions are not computed")
         else:
             self.computeDepressions()
         end = perf_counter_ns()
-        print("Depression computation time:", end - start)
+        print("Depression computation time:", (end - start)*10**-9)
         
     def computeRidgeLength(self, ir):
         """
@@ -153,7 +153,7 @@ class SurfaceNetwork(ThalwegNetwork):
             'type' : linetype
         }
         
-    def computeAscent(self, i, j, v, z, ldr, plgn, danglingconfluence, confluencewedge, thalwegside, dtoverlap, danglingmap):
+    def computeAscent(self, i, j, v, z, ldr, wedge, danglingconfluence, confluencewedge, thalwegside, dtoverlap, danglingmap):
         """
         Compute the direction of ascent, along the edge closest to the gradient
 
@@ -202,8 +202,9 @@ class SurfaceNetwork(ThalwegNetwork):
         validridge = True
         
         checkcovers = False
-        if self.isDownslopeLine(self.terrain.pixelclass[i,j]) or CellType.isTJunction(self.terrain.pixelclass[i,j]):
-#        if CellType.isThalweg(self.terrain.pixelclass[i,j]) or CellType.isTJunction(self.terrain.pixelclass[i,j]):
+        # if the point is on the border of the hill
+#        if self.isDownslopeLine(self.pixelclass[i,j]) or CellType.isTJunction(self.pixelclass[i,j]):
+        if (i,j) in wedge:
             checkcovers = True
         for kk,value in enumerate(dz):
             ij = (i+ldr[kk][0], j+ldr[kk][1])
@@ -230,10 +231,18 @@ class SurfaceNetwork(ThalwegNetwork):
             covers = True
             try:
                 if checkcovers:
-                    line = shapely.geometry.LineString([(i, j), (ij[0], ij[1])])
-                    covers = plgn.relate_pattern(line, '******FF*')
+                    t_0 = perf_counter_ns()
+#                    line = shapely.geometry.LineString([(i, j), (ij[0], ij[1])])
+                    # E(plgn)\inter I(line) = F, E(plgn)\inter b(line) = F
+#                    covers = plgn.relate_pattern(line, '******FF*')
+#                    print(i, j, ij)
+                    side = df.sideOfWedge2(wedge[(i,j)], (ij[0], ij[1]))
+                    covers = (side <=0)
+#                    if side > 0 and covers:
+#                        print("erreur computeAscent", i,j, ij)
+                    self.covertime += perf_counter_ns() - t_0
             except Exception as err:
-                print(err, 'in computeAscent topology exception from shapely', i,j)
+                print(err, 'in computeAscent topology exception', i,j)
                 validridge = False
                 return validridge, kmax, inlist
             if covers and tside >= 0:
@@ -562,399 +571,391 @@ class SurfaceNetwork(ThalwegNetwork):
 
         """
 
-        terrain = self.terrain
-#        # key for new ridges        
-#        nextridge = max(self.linedict) + 1
         # hill polygons and map of dangling thalwegs
-        hillpolygon, danglingmap = self.createHillPolygons()
-        
-        pixelclass = self.terrain.pixelclass
-
-#        testir = [10363]
+        self.covertime = 0
+#        t_0 = perf_counter_ns()
+        danglingmap = self.getDanglingMap()
+#        self.covertime += perf_counter_ns() - t_0
         for ihill in self.hilldict:
-            floorkey={} # coordinate index recording ridge id
-            junctionidx = {} # coordinate index to junctions
-            ridgeindangling = {} # coordinate index for ridges on a dangling thalweg
-            # for each coordinate, records the ridge id and the side of the thalweg to check
-            # if another rige comes there, a junction should be inserted
+            self.traceHillRidges(ihill, danglingmap, divide, correction)
+        print("Checking time:", self.covertime*10**-9)
             
-            if ihill % 1000 == 0:
-                print(ihill, end=" ")
-            hill = self.hilldict[ihill]
-            ridgelist = hill['ridge'][:]
-            for ir in ridgelist:
-#                if ir not in testir:
-#                    continue
-                r = self.linedict[ir]
-                polylist = r['polyline']
-                ipt = r['start']
-                #pt = self.nodedict[ir]
-                # computes a hill starting from t at ipt
-                #thalwegring, thalwegline = self.getThalwegRing(ipt, t)
-                
-                # in regular cases, thalwegline is empty and thalwegring contains only one ring, the boundary,
-                # and the ring goes clockwise
-                
-                # if there are several rings, the biggest one is the boundary, others are holes
-                
-                # singular case: a node has two thalwegs that yield the same ring in different directions
-                # this case can occur for two thalwegs from a pass connecting the same pit
-                
-                # create the shapely polygon from the hill
-                plgn = hillpolygon[ihill]
-                
-                (i,j) = polylist[1]
-                dtoverlap = danglingmap[i,j] # thalweg id on which the ridge is
-                thalwegside = 0 # -1/0/1 if left/undefined/right side
-                # on which side of the dangling line we come from
-                if dtoverlap > 0:
-                    if divide and 'startside' in self.linedict[ir]: 
-                        thalwegside = self.linedict[ir]['startside']
+    def traceHillRidges(self, ihill, danglingmap, divide = False, correction = True):
+        terrain = self.terrain
+        pixelclass = self.pixelclass
+
+        floorkey={} # coordinate index recording ridge id
+        junctionidx = {} # coordinate index to junctions
+        ridgeindangling = {} # coordinate index for ridges on a dangling thalweg
+        # for each coordinate, records the ridge id and the side of the thalweg to check
+        # if another rige comes there, a junction should be inserted
+        
+        if ihill % 1000 == 0:
+            print(ihill, end=" ")
+        hill = self.hilldict[ihill]
+        ridgelist = hill['ridge'][:]
+        for ir in ridgelist:
+            r = self.linedict[ir]
+            polylist = r['polyline']
+            ipt = r['start']
+            #pt = self.nodedict[ir]
+            # computes a hill starting from t at ipt
+            #thalwegring, thalwegline = self.getThalwegRing(ipt, t)
+            
+            # in regular cases, thalwegline is empty and thalwegring contains only one ring, the boundary,
+            # and the ring goes clockwise
+            
+            # if there are several rings, the biggest one is the boundary, others are holes
+            
+            # singular case: a node has two thalwegs that yield the same ring in different directions
+            # this case can occur for two thalwegs from a pass connecting the same pit
+            
+            # create the shapely polygon from the hill
+            t_0 = perf_counter_ns()
+            wedge = self.getHillWedges(ihill) ### XXXX
+            self.covertime += perf_counter_ns() - t_0
+            
+            (i,j) = polylist[1]
+            dtoverlap = danglingmap[i,j] # thalweg id on which the ridge is
+            thalwegside = 0 # -1/0/1 if left/undefined/right side
+            # on which side of the dangling line we come from
+            if dtoverlap > 0:
+                if divide and 'startside' in self.linedict[ir]: 
+                    thalwegside = self.linedict[ir]['startside']
+                else:
+                    tmppoly = self.linedict[dtoverlap]['polyline']
+                    kt = tmppoly.index((i,j))
+                    if kt == 0:
+                        #print('kt = 0, thalweg', dtoverlap, 'ridge', ir)
+                        thalwegside = 0
                     else:
-                        tmppoly = self.linedict[dtoverlap]['polyline']
-                        kt = tmppoly.index((i,j))
-                        if kt == 0:
-                            #print('kt = 0, thalweg', dtoverlap, 'ridge', ir)
-                            thalwegside = 0
-                        else:
-                            thalwegside = df.sideOfLine(tmppoly, kt, polylist[0])
+                        thalwegside = df.sideOfLine(tmppoly, kt, polylist[0])
+            danglingconfluence = False
+            confluencewedge = ()
+
+            keepgoing = True # false once a critical point is reached
+            #outbound = False # true if out of bound (obsolete)
+            junction = False # true if a new junction point to be created
+            okjoin = True # false if the ridge reaches another ridge on the other side of the thalweg
+            endindex = -1
+            
+            nextrounds = False # only for the first round
+            validridge = True # false if an exception occured in ascent computation
+            
+            oldlag = 0
+            oldldr = (0,0)
+            oldij = (i,j)
+            while keepgoing:
+                if nextrounds:
+                    ldr = terrain.neighbour[i,j]
+                    v = terrain.getNeighbourHeights(i, j)
+                    z = terrain.dtm[i,j]
+
+                    #print(plgn)
+                    [validridge, kmax, inlist] = self.computeAscent(i, j, v, z, ldr, wedge, danglingconfluence, confluencewedge, thalwegside, dtoverlap, danglingmap)
+
+                    if not validridge:
+                        print('validridge', ir, ihill)
+                        exit(0)
+                    oldij = (i,j) # used later to check sides
+                    
+                    # the steepest gradient is for v[kmax]
+                    # we check if we need to modify it according to the lag
+                    if correction:
+                        [oldldr, oldlag] = self.correctAscent(v, z, kmax, ldr, inlist, oldldr, oldlag) 
+                    else:
+                        oldldr = ldr[kmax]
+                    i += oldldr[0]
+                    j += oldldr[1]
+                    # if (i,j) in polylist:
+                    #     print(i, j, "we're turning back")
+                    #     print(ipt, ir, ihill, polylist)
+                    #     polylist = polylist[:polylist.index((i,j))]
+                    #     validridge = False
+                    #     break
+                    polylist.append((i,j))
+
+                nextrounds = True                    
+                # check dangling thalwegs
+                okjoin = True
                 danglingconfluence = False
-                confluencewedge = ()
-
-                keepgoing = True # false once a critical point is reached
-                #outbound = False # true if out of bound (obsolete)
-                junction = False # true if a new junction point to be created
-                okjoin = True # false if the ridge reaches another ridge on the other side of the thalweg
-                endindex = -1
-                
-                nextrounds = False # only for the first round
-                validridge = True # false if an exception occured in ascent computation
-                
-                oldlag = 0
-                oldldr = (0,0)
-                oldij = (i,j)
-                while keepgoing:
-                    if nextrounds:
-                        ldr = terrain.neighbour[i,j]
-                        v = terrain.getNeighbourHeights(i, j)
-                        z = terrain.dtm[i,j]
-    
-                        #print(plgn)                    
-                        [validridge, kmax, inlist] = self.computeAscent(i, j, v, z, ldr, plgn, danglingconfluence, confluencewedge, thalwegside, dtoverlap, danglingmap)
-
-                        if not validridge:
-                            print('validridge', ir, ihill)
-                            exit(0)
-                        oldij = (i,j) # used later to check sides
-                        
-                        # the steepest gradient is for v[kmax]
-                        # we check if we need to modify it according to the lag
-                        if correction:
-                            [oldldr, oldlag] = self.correctAscent(v, z, kmax, ldr, inlist, oldldr, oldlag) 
-                        else:
-                            oldldr = ldr[kmax]
-                        i += oldldr[0]
-                        j += oldldr[1]
-                        # if (i,j) in polylist:
-                        #     print(i, j, "we're turning back")
-                        #     print(ipt, ir, ihill, polylist)
-                        #     polylist = polylist[:polylist.index((i,j))]
-                        #     validridge = False
-                        #     break
-                        polylist.append((i,j))
-
-                    nextrounds = True                    
-                    # check dangling thalwegs
-                    okjoin = True
-                    danglingconfluence = False
-                    oldoverlap = dtoverlap
-                    dtoverlap = danglingmap[i,j]
-                    # no dangling thalweg under this pixel
-                    if dtoverlap <= 0:
-                        # if we reach a confluence
-                        if CellType.isTJunction(pixelclass[i,j]):
-                            iconf = self.nodeidx[(i,j)]
+                oldoverlap = dtoverlap
+                dtoverlap = danglingmap[i,j]
+                # no dangling thalweg under this pixel
+                if dtoverlap <= 0:
+                    # if we reach a confluence
+                    if CellType.isTJunction(pixelclass[i,j]):
+                        iconf = self.nodeidx[(i,j)]
 #                            confthalweg = self.nodedict[iconf]['thalweg']
-                            confthalweg = self.getThalwegsAtNode(iconf)
-                            # check if first node of dangling thalweg
-                            lthalweg = [-t for t in confthalweg if -t in hill['dangling']]
-                            if lthalweg:
-                                oldtlwg = [t for t in confthalweg if t > 0][0]
-                                if len(lthalweg) > 1:
-                                    print("trouble ahead: more than one dangling thalwegs", lthalweg)
-                                dtoverlap = lthalweg[0]
-                                otherthalweg = [-t for t in confthalweg if t < 0 and -t != dtoverlap][0]
-                                p3 = self.linedict[oldtlwg]['polyline'][1]
-                                p2 = self.linedict[dtoverlap]['polyline'][-2]
-                                p1 = self.linedict[otherthalweg]['polyline'][-2]
-                                confluencewedge = (p3, (i,j), p2)
-                                danglingconfluence = True
-                                thalwegside = -df.sideOfWedge(confluencewedge, p1)
-                                #print(ir, confluencewedge, p1, thalwegside)
-                        else:
-                            thalwegside = 0 # we are no longer on a thalweg
-                    # if we are on a dangling thalweg
-                    else:
-                        # if it is a tjunction (that's the last pixel of the thalweg)
-                        if CellType.isTJunction(pixelclass[i,j]):
-                            iconf = self.nodeidx[(i,j)] # iconf is the tjunction node
-                            lthalweg = self.nodedict[iconf]['line']
-                            # ithalweg is the thalweg position in the line dict of iconf
-                            ithalweg = lthalweg.index(dtoverlap)
-                            it1 = df.getSecondPointPosition(lthalweg[ithalweg])
-                            p1 = self.linedict[dtoverlap]['polyline'][it1]
-                            # if we don't know on which side to stay
-                            if thalwegside == 0:
-### On veut prendre le talweg précédent et le suivant -> sauter les crêtes
-#                                jthalweg = ithalweg - 1
-#                                kthalweg = ithalweg + 1
-#                                if kthalweg == len(lthalweg):
-#                                    kthalweg = 0
-                                jthalweg = self.previousThalwegIndexAtNode(iconf, ithalweg)
-                                kthalweg = self.nextThalwegIndexAtNode(iconf, ithalweg)
-                                it2 = df.getSecondPointPosition(lthalweg[jthalweg])
-                                it3 = df.getSecondPointPosition(lthalweg[kthalweg])
-                                p2 = self.linedict[abs(lthalweg[jthalweg])]['polyline'][it2]
-                                p3 = self.linedict[abs(lthalweg[kthalweg])]['polyline'][it3]
-                                # ajout 7/9/22
-                                p4 = polylist[-2]
-                                wedge2 = (p1, (i,j), p2)
-                                wedge3 = (p1, (i,j), p3)
-                                side23 = df.sideOfWedge(wedge2, p3)
-                                side24 = df.sideOfWedge(wedge2, p4)
-                                side32 = df.sideOfWedge(wedge3, p2)
-                                side34 = df.sideOfWedge(wedge3, p4)
-                                side2 = side23 * side24
-                                side3 = side32 * side34
-                                if side2 < 0:
-                                    confluencewedge = wedge2
-                                    thalwegside = side24
-                                elif side3 < 0:
-                                    confluencewedge = wedge3
-                                    thalwegside = side34
-                                elif side3 > 0:
-                                    confluencewedge = wedge2
-                                    thalwegside = side24
-                                elif side2 > 0:
-                                    confluencewedge = wedge3
-                                    thalwegside = side34
-                                # remplace
-                                #thalwegside = df.sideOfWedge(confluencewedge, p1)
-                                # fin ajout 7/9/22
-                            # if we know on which side to stay
-                            else:
-                                jthalweg = kthalweg = self.nextThalwegIndexAtNode(iconf, ithalweg)
-                                if thalwegside > 0:
-                                    kthalweg = self.previousThalwegIndexAtNode(iconf, ithalweg)
-                                else:
-                                    jthalweg = self.previousThalwegIndexAtNode(iconf, ithalweg)
-                                it2 = df.getSecondPointPosition(lthalweg[jthalweg])
-                                it3 = df.getSecondPointPosition(lthalweg[kthalweg])
-                                p2 = self.linedict[abs(lthalweg[jthalweg])]['polyline'][it2]
-                                p3 = self.linedict[abs(lthalweg[kthalweg])]['polyline'][it3]
-                                confluencewedge = (p1,(i,j),p2)
-                                side23 = df.sideOfWedge(confluencewedge, p3)
-                                thalwegside = -side23
-                                dtoverlap = lthalweg[jthalweg]
+                        confthalweg = self.getThalwegsAtNode(iconf)
+                        # check if first node of dangling thalweg
+                        lthalweg = [-t for t in confthalweg if -t in hill['dangling']]
+                        if lthalweg:
+                            oldtlwg = [t for t in confthalweg if t > 0][0]
+                            if len(lthalweg) > 1:
+                                print("trouble ahead: more than one dangling thalwegs", lthalweg)
+                            dtoverlap = lthalweg[0]
+                            otherthalweg = [-t for t in confthalweg if t < 0 and -t != dtoverlap][0]
+                            p3 = self.linedict[oldtlwg]['polyline'][1]
+                            p2 = self.linedict[dtoverlap]['polyline'][-2]
+                            p1 = self.linedict[otherthalweg]['polyline'][-2]
+                            confluencewedge = (p3, (i,j), p2)
                             danglingconfluence = True
-                        # if we are not at a confluence (regular thalweg pixel)
+                            thalwegside = -df.sideOfWedge(confluencewedge, p1)
+                            #print(ir, confluencewedge, p1, thalwegside)
+                    else:
+                        thalwegside = 0 # we are no longer on a thalweg
+                # if we are on a dangling thalweg
+                else:
+                    # if it is a tjunction (that's the last pixel of the thalweg)
+                    if CellType.isTJunction(pixelclass[i,j]):
+                        iconf = self.nodeidx[(i,j)] # iconf is the tjunction node
+                        lthalweg = self.nodedict[iconf]['line']
+                        # ithalweg is the thalweg position in the line dict of iconf
+                        ithalweg = lthalweg.index(dtoverlap)
+                        it1 = df.getSecondPointPosition(lthalweg[ithalweg])
+                        p1 = self.linedict[dtoverlap]['polyline'][it1]
+                        # if we don't know on which side to stay
+                        if thalwegside == 0:
+                            jthalweg = self.previousThalwegIndexAtNode(iconf, ithalweg)
+                            kthalweg = self.nextThalwegIndexAtNode(iconf, ithalweg)
+                            it2 = df.getSecondPointPosition(lthalweg[jthalweg])
+                            it3 = df.getSecondPointPosition(lthalweg[kthalweg])
+                            p2 = self.linedict[abs(lthalweg[jthalweg])]['polyline'][it2]
+                            p3 = self.linedict[abs(lthalweg[kthalweg])]['polyline'][it3]
+                            # ajout 7/9/22
+                            p4 = polylist[-2]
+                            wedge2 = (p1, (i,j), p2)
+                            wedge3 = (p1, (i,j), p3)
+                            side23 = df.sideOfWedge(wedge2, p3)
+                            side24 = df.sideOfWedge(wedge2, p4)
+                            side32 = df.sideOfWedge(wedge3, p2)
+                            side34 = df.sideOfWedge(wedge3, p4)
+                            side2 = side23 * side24
+                            side3 = side32 * side34
+                            if side2 < 0:
+                                confluencewedge = wedge2
+                                thalwegside = side24
+                            elif side3 < 0:
+                                confluencewedge = wedge3
+                                thalwegside = side34
+                            elif side3 > 0:
+                                confluencewedge = wedge2
+                                thalwegside = side24
+                            elif side2 > 0:
+                                confluencewedge = wedge3
+                                thalwegside = side34
+                        # if we know on which side to stay
                         else:
-                            if oldoverlap > 0 and dtoverlap != oldoverlap and not CellType.isSaddle(pixelclass[i,j]):
-                                tmppoly = self.linedict[dtoverlap]['polyline']
-                                kt = tmppoly.index((i,j))
-                                if kt != 0:
-                                    thalwegside = df.sideOfLine(tmppoly, kt, oldij)
-                                else:
-                                    thalwegside = 0
-                            # fin correction
-                            # if we don't know on which side to stay, find it out
-                            if thalwegside == 0:
-                                tmppoly = self.linedict[dtoverlap]['polyline']
-                                kt = tmppoly.index((i,j))
-                                if kt != 0:
-                                    #print("ça va planter", kt, i,j, ir, dtoverlap, oldij)
-                                    thalwegside = df.sideOfLine(tmppoly, kt, oldij)
-                            # if there is already a ridge here
-                            if (i,j) in floorkey:
-                                #if len(ridgeindangling[(i,j)]) > 1:
-                                    #print("Check this (more than one ridge)", ipt, ir, i, j, ridgeindangling[(i,j)])
-                                jnctn = [rd[1] for rd in ridgeindangling[(i,j)]]
-                                if not thalwegside in jnctn:
-                                    okjoin = False
-                                #elif -thalwegside in jnctn:
-                                #    print(i,j, ir, thalwegside, ridgeindangling[(i,j)])
+                            jthalweg = kthalweg = self.nextThalwegIndexAtNode(iconf, ithalweg)
+                            if thalwegside > 0:
+                                kthalweg = self.previousThalwegIndexAtNode(iconf, ithalweg)
+                            else:
+                                jthalweg = self.previousThalwegIndexAtNode(iconf, ithalweg)
+                            it2 = df.getSecondPointPosition(lthalweg[jthalweg])
+                            it3 = df.getSecondPointPosition(lthalweg[kthalweg])
+                            p2 = self.linedict[abs(lthalweg[jthalweg])]['polyline'][it2]
+                            p3 = self.linedict[abs(lthalweg[kthalweg])]['polyline'][it3]
+                            confluencewedge = (p1,(i,j),p2)
+                            side23 = df.sideOfWedge(confluencewedge, p3)
+                            thalwegside = -side23
+                            dtoverlap = lthalweg[jthalweg]
+                        danglingconfluence = True
+                    # if we are not at a confluence (regular thalweg pixel)
+                    else:
+                        if oldoverlap > 0 and dtoverlap != oldoverlap and not CellType.isSaddle(pixelclass[i,j]):
+                            tmppoly = self.linedict[dtoverlap]['polyline']
+                            kt = tmppoly.index((i,j))
+                            if kt != 0:
+                                thalwegside = df.sideOfLine(tmppoly, kt, oldij)
+                            else:
+                                thalwegside = 0
+                        # fin correction
+                        # if we don't know on which side to stay, find it out
+                        if thalwegside == 0:
+                            tmppoly = self.linedict[dtoverlap]['polyline']
+                            kt = tmppoly.index((i,j))
+                            if kt != 0:
+                                #print("ça va planter", kt, i,j, ir, dtoverlap, oldij)
+                                thalwegside = df.sideOfLine(tmppoly, kt, oldij)
+                        # if there is already a ridge here
+                        if (i,j) in floorkey:
+                            #if len(ridgeindangling[(i,j)]) > 1:
+                                #print("Check this (more than one ridge)", ipt, ir, i, j, ridgeindangling[(i,j)])
+                            jnctn = [rd[1] for rd in ridgeindangling[(i,j)]]
+                            if not thalwegside in jnctn:
+                                okjoin = False
+                            #elif -thalwegside in jnctn:
+                            #    print(i,j, ir, thalwegside, ridgeindangling[(i,j)])
+                            ridgeindangling[(i,j)].append((ir, thalwegside))
+                        else:
+                            ridgeindangling[(i,j)] = [(ir, thalwegside)]
+                        
+                # check if the point is a node or out (it should not happen)
+                if not terrain.isInside(i,j):
+                    keepgoing = False
+                    #outbound = True
+                    print("we're out")
+                    
+                # check what kind of pixel we reach and whether we keep going
+                if pixelclass[i,j] == CellType.REGULAR:
+                    # nothing special, keep going
+                    keepgoing = True
+                    pixelclass[i,j] = CellType.RIDGE
+                    floorkey[i,j] = ir
+                # if divide is false (default) confluences are not considered 
+                # as end points since ridges only start from saddles
+                # if divide is true, ridges can start and end at confluences
+                elif self.isDownslopeLine(pixelclass[i,j]) or (CellType.isTJunction(pixelclass[i,j]) and not divide):
+                    if (i,j) in floorkey: # we reach a ridge
+                        if not okjoin:
+                            junction = False
+                            keepgoing = True
+                            floorkey[i,j] = ir
+                        else:
+                            if (i,j) not in junctionidx: # we need to create a junction
+                                junction = True
+                            keepgoing = False
+                    else:
+                        keepgoing = True
+                        floorkey[i,j] = ir
+                elif divide and CellType.isTJunction(pixelclass[i,j]):
+                    if (i,j) in floorkey:
+                        junction = False
+                        keepgoing = False
+                        if dtoverlap > 0:
+                            if (i,j) in ridgeindangling:
                                 ridgeindangling[(i,j)].append((ir, thalwegside))
                             else:
                                 ridgeindangling[(i,j)] = [(ir, thalwegside)]
-                            
-                    # check if the point is a node or out (it should not happen)
-                    if not terrain.isInside(i,j):
-                        keepgoing = False
-                        #outbound = True
-                        print("we're out")
-                        
-                    # check what kind of pixel we reach and whether we keep going
-                    if pixelclass[i,j] == CellType.REGULAR:
-                        # nothing special, keep going
-                        keepgoing = True
-                        pixelclass[i,j] = CellType.RIDGE
+                    else:
                         floorkey[i,j] = ir
-                    # if divide is false (default) confluences are not considered 
-                    # as end points since ridges only start from saddles
-                    # if divide is true, ridges can start and end at confluences
-                    elif self.isDownslopeLine(pixelclass[i,j]) or (CellType.isTJunction(pixelclass[i,j]) and not divide):
-#                    elif CellType.isThalweg(pixelclass[i,j]) or (CellType.isTJunction(pixelclass[i,j]) and not divide):
-                        if (i,j) in floorkey: # we reach a ridge
-                            if not okjoin:
-                                junction = False
-                                keepgoing = True
-                                floorkey[i,j] = ir
-                            else:
-                                if (i,j) not in junctionidx: # we need to create a junction
-                                    junction = True
-                                keepgoing = False
-                        else:
-                            keepgoing = True
-                            floorkey[i,j] = ir
-                    elif divide and CellType.isTJunction(pixelclass[i,j]):
-                        if (i,j) in floorkey:
-                            junction = False
-                            keepgoing = False
-                            if dtoverlap > 0:
-                                if (i,j) in ridgeindangling:
-                                    ridgeindangling[(i,j)].append((ir, thalwegside))
-                                else:
-                                    ridgeindangling[(i,j)] = [(ir, thalwegside)]
-                        else:
-                            floorkey[i,j] = ir
-                            if dtoverlap > 0:
-                                ridgeindangling[(i,j)] = [(ir, thalwegside)]
-                            keepgoing = False
-                            junction = False
-                    elif CellType.isRidge(pixelclass[i,j]):
+                        if dtoverlap > 0:
+                            ridgeindangling[(i,j)] = [(ir, thalwegside)]
                         keepgoing = False
-                        junction = True
-                    else: # ridge terminates at a saddle or peak
-                        keepgoing = False
-                        #outbound = False
-                # end of while loop reached when keepgoing is false
-            
-            
-                if validridge:
-                    if junction:                    
-                        # if we reach an existing ridge, we have to create a junction
-                        idridge = floorkey[i,j]
-                        if (i,j) in ridgeindangling:
-                            idridge = [rd[0] for rd in ridgeindangling[(i,j)] if rd[1] == thalwegside][0]
-                            #print('idridge = ', idridge, ir, ridgeindangling[(i,j)])
-                        # we create the new node
-                        endindex = self.nodekey
-                        self.nodeidx[(i,j)] = self.nodekey
-                        junctionidx[(i,j)] = self.nodekey
-                        self.nodedict[self.nodekey] = {
-                            'ij' : (i,j),
-                            'z': self.terrain.dtm[i,j],
-                            'line' : [-idridge],
-                            'type' : CellType.RJUNCTION
-                        }
-                        #print(endindex, ir, idridge, nextridge, self.nodedict[endindex])
-                        if CellType.isRidge(pixelclass[i,j]):
-                            pixelclass[i,j] = CellType.RJUNCTION
-                        self.nodekey += 1
-                        # split the existing ridge in two
-                        r = self.linedict[idridge]
-                        ptlist = r['polyline']
-                        iend = r['end']
-                        try:
-                            icfl = ptlist.index((i,j)) # point where we split
-                        except ValueError:
-                            print('in createRidges ptlist.index', ipt, ir, idridge, ihill)
-                            print('polylist', polylist)
-                            print('ij', i, j, r)
-                            break
-                        ptlist1 = ptlist[:icfl+1]
-                        ptlist2 = ptlist[icfl:]
-                        # modify the first ridge to stop at the junction
-                        r['polyline'] = ptlist1
-                        r['end'] = endindex
-                        # create a new ridge
-                        self.addNewRidge(self.linekey, ihill, endindex, None, ptlist2, r['type'])
+                        junction = False
+                elif CellType.isRidge(pixelclass[i,j]):
+                    keepgoing = False
+                    junction = True
+                else: # ridge terminates at a saddle or peak
+                    keepgoing = False
+                    #outbound = False
+            # end of while loop reached when keepgoing is false
+        
+        
+            if validridge:
+                if junction:                    
+                    # if we reach an existing ridge, we have to create a junction
+                    idridge = floorkey[i,j]
+                    if (i,j) in ridgeindangling:
+                        idridge = [rd[0] for rd in ridgeindangling[(i,j)] if rd[1] == thalwegside][0]
+                        #print('idridge = ', idridge, ir, ridgeindangling[(i,j)])
+                    # we create the new node
+                    endindex = self.nodekey
+                    self.nodeidx[(i,j)] = self.nodekey
+                    junctionidx[(i,j)] = self.nodekey
+                    self.nodedict[self.nodekey] = {
+                        'ij' : (i,j),
+                        'z': self.terrain.dtm[i,j],
+                        'line' : [-idridge],
+                        'type' : CellType.RJUNCTION
+                    }
+                    #print(endindex, ir, idridge, nextridge, self.nodedict[endindex])
+                    if CellType.isRidge(pixelclass[i,j]):
+                        pixelclass[i,j] = CellType.RJUNCTION
+                    self.nodekey += 1
+                    # split the existing ridge in two
+                    r = self.linedict[idridge]
+                    ptlist = r['polyline']
+                    iend = r['end']
+                    try:
+                        icfl = ptlist.index((i,j)) # point where we split
+                    except ValueError:
+                        print('in createRidges ptlist.index', ipt, ir, idridge, ihill)
+                        print('polylist', polylist)
+                        print('ij', i, j, r)
+                        break
+                    ptlist1 = ptlist[:icfl+1]
+                    ptlist2 = ptlist[icfl:]
+                    # modify the first ridge to stop at the junction
+                    r['polyline'] = ptlist1
+                    r['end'] = endindex
+                    # create a new ridge
+                    self.addNewRidge(self.linekey, ihill, endindex, None, ptlist2, r['type'])
 #                        self.addNewRidge(self.linekey, ihill, endindex, None, ptlist2)
-                        self.linedict[self.linekey]['end'] = iend
-                        if 'endside' in r:
-                            self.linedict[self.linekey]['endside'] = r['endside']
-                        
-                        # we update the node at the end of the new ridge
-                        ndt = self.nodedict[iend]['line']
+                    self.linedict[self.linekey]['end'] = iend
+                    if 'endside' in r:
+                        self.linedict[self.linekey]['endside'] = r['endside']
+                    
+                    # we update the node at the end of the new ridge
+                    ndt = self.nodedict[iend]['line']
 # à insérer à la bonne place: on remplace -idridge par -nextridge/self.linekey
-                        idx = ndt.index(-idridge)
-                        ndt[idx] = -self.linekey
+                    idx = ndt.index(-idridge)
+                    ndt[idx] = -self.linekey
 #                        ndt.append(-nextridge)
-                        # we update floorkey with linekey
-                        
-                        for k in ptlist2[1:-1]:
-                            floorkey[k] = self.linekey
-                            if k in ridgeindangling:
-                                pos = [i for i, x in enumerate(ridgeindangling[k]) if x[0] == idridge][0]
-                                tmp = ridgeindangling[k][pos][1]
-                                del ridgeindangling[k][pos]
-                                ridgeindangling[k].append((self.linekey, tmp))
-                        self.linekey += 1
-                    else:
-#                        if self.isDownslopeLine(pixelclass[i,j]):
-#                            print(i,j, ir, danglingmap[i,j], pixelclass[i,j])
-                        endindex = self.nodeidx[(i,j)]
+                    # we update floorkey with linekey
+                    
+                    for k in ptlist2[1:-1]:
+                        floorkey[k] = self.linekey
+                        if k in ridgeindangling:
+                            pos = [i for i, x in enumerate(ridgeindangling[k]) if x[0] == idridge][0]
+                            tmp = ridgeindangling[k][pos][1]
+                            del ridgeindangling[k][pos]
+                            ridgeindangling[k].append((self.linekey, tmp))
+                    self.linekey += 1
+                else:
+                    endindex = self.nodeidx[(i,j)]
 
-                    # the last point is a critical point
-                    # we add its index to the linelist
-                    # if a peak or an rjunction, add it at the end of the list
-                    # otherwise, add it between the thalwegs in the proper hill
-                    endnode = self.nodedict[endindex]
+                # the last point is a critical point
+                # we add its index to the linelist
+                # if a peak or an rjunction, add it at the end of the list
+                # otherwise, add it between the thalwegs in the proper hill
+                endnode = self.nodedict[endindex]
 #                    if endnode['type'] == CellType.PEAK or endnode['type'] == CellType.RJUNCTION:
-                    if endnode['type'] & CellType.DRYNODE_FLAG:
-                        endnode['line'].append(-ir)
-                    else:
-                        p2 = endnode['ij']
-                        pt = polylist[-2]
-                        # remove ridges from other hills from the line list to avoid overlapping ridges
-                        lines = [l for l in endnode['line'] if (self.linedict[abs(l)]['type'] & CellType.WATERCOURSE_FLAG or 
-                                                                (self.linedict[abs(l)]['type'] & CellType.DIVIDE_FLAG and self.linedict[abs(l)]['hill'] == ihill))]
+                if endnode['type'] & CellType.DRYNODE_FLAG:
+                    endnode['line'].append(-ir)
+                else:
+                    p2 = endnode['ij']
+                    pt = polylist[-2]
+                    # remove ridges from other hills from the line list to avoid overlapping ridges
+                    lines = [l for l in endnode['line'] if (self.linedict[abs(l)]['type'] & CellType.WATERCOURSE_FLAG or 
+                                                            (self.linedict[abs(l)]['type'] & CellType.DIVIDE_FLAG and self.linedict[abs(l)]['hill'] == ihill))]
+                    pl = lines.pop(0)
+                    # we push the first thalweg at the end to loop on all lines
+                    lines.append(pl)
+                    while lines:
+                        # check if the ridge is between pl and nl
+                        nl = lines[0]
+                        p1 = self.linedict[abs(pl)]['polyline'][df.getSecondPointPosition(pl)]
+                        p3 = self.linedict[abs(nl)]['polyline'][df.getSecondPointPosition(nl)]
+                        side = df.sideOfWedge2((p1, p2, p3), pt)
+                        if side == 1:
+                            break
+                        if side == 0:
+                            # include a test in case two divides are overlapping (over a dangling thalweg)
+                            if p1 == pt and self.linedict[abs(pl)]['type'] & CellType.WATERCOURSE_FLAG: # ridge covers the first thalweg
+                                if pl > 0 and self.linedict[pl]['righthill'] == ihill:
+                                    if not (self.linedict[pl]['lefthill'] == ihill and thalwegside == -1):
+                                        break
+                                if pl < 0 and self.linedict[-pl]['lefthill'] == ihill:
+                                    if not (self.linedict[-pl]['righthill'] == ihill and thalwegside == 1):
+                                        break
+                            if p3 == pt and self.linedict[abs(nl)]['type'] & CellType.WATERCOURSE_FLAG:
+                                if nl > 0 and self.linedict[nl]['lefthill'] == ihill:
+                                    if not (self.linedict[nl]['righthill'] == ihill and thalwegside == 1):
+                                        break
+                                if nl < 0 and self.linedict[-nl]['righthill'] == ihill:
+                                    if not (self.linedict[-nl]['lefthill'] == ihill and thalwegside == -1):
+                                        break
                         pl = lines.pop(0)
-                        # we push the first thalweg at the end to loop on all lines
-                        lines.append(pl)
-                        while lines:
-                            # check if the ridge is between pl and nl
-                            nl = lines[0]
-                            p1 = self.linedict[abs(pl)]['polyline'][df.getSecondPointPosition(pl)]
-                            p3 = self.linedict[abs(nl)]['polyline'][df.getSecondPointPosition(nl)]
-                            side = df.sideOfWedge2((p1, p2, p3), pt)
-                            if side == 1:
-                                break
-                            if side == 0:
-                                # include a test in case two divides are overlapping (over a dangling thalweg)
-                                if p1 == pt and self.linedict[abs(pl)]['type'] & CellType.WATERCOURSE_FLAG: # ridge covers the first thalweg
-                                    if pl > 0 and self.linedict[pl]['righthill'] == ihill:
-                                        if not (self.linedict[pl]['lefthill'] == ihill and thalwegside == -1):
-                                            break
-                                    if pl < 0 and self.linedict[-pl]['lefthill'] == ihill:
-                                        if not (self.linedict[-pl]['righthill'] == ihill and thalwegside == 1):
-                                            break
-                                if p3 == pt and self.linedict[abs(nl)]['type'] & CellType.WATERCOURSE_FLAG:
-                                    if nl > 0 and self.linedict[nl]['lefthill'] == ihill:
-                                        if not (self.linedict[nl]['righthill'] == ihill and thalwegside == 1):
-                                            break
-                                    if nl < 0 and self.linedict[-nl]['righthill'] == ihill:
-                                        if not (self.linedict[-nl]['lefthill'] == ihill and thalwegside == -1):
-                                            break
-                            pl = lines.pop(0)
-                        # insert -ir after pl (to keep a thalweg at first position)
-                        it = endnode['line'].index(pl)
-                        endnode['line'].insert(it+1, -ir)
-                            
-                    self.linedict[ir]['polyline'] = polylist
-                    self.linedict[ir]['end'] = endindex
-                    if thalwegside:
-                        self.linedict[ir]['endside'] = thalwegside
+                    # insert -ir after pl (to keep a thalweg at first position)
+                    it = endnode['line'].index(pl)
+                    endnode['line'].insert(it+1, -ir)
+                        
+                self.linedict[ir]['polyline'] = polylist
+                self.linedict[ir]['end'] = endindex
+                if thalwegside:
+                    self.linedict[ir]['endside'] = thalwegside
 
     def orderRidgesAroundNodes(self):
         """

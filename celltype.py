@@ -9,17 +9,16 @@ Created on Thu Jan 29 22:19:06 2026
 from enum import IntFlag
     
 class CellType(IntFlag):
-    # flag during process (be careful in binary test)
-    TOBEPROCESSED = 1
-    
+    # flag during process
+    TOBEPROCESSED = 1 
+    ### to be done: remove tobeprocessed, innan and out ####
+    ### keep a code for holes? ###
     nanshift = 2
     # Out of domain points, distinguish points in holes and outside
-    INNaN = nanshift # df.NOTIN for points that are in holes
-    OUT = nanshift << 1 # for points that are outside the outer boundary
-    NaN = INNaN | OUT # No value points
+    NaN = nanshift # No value points
 
     # Point/line flag
-    POINT = OUT << 1
+    POINT = NaN << 1
     LINE = POINT << 1
     POLYGON = LINE << 1
     
